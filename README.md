@@ -5,7 +5,7 @@ map, record and replay flights, and review scored carrier landings.
 
 ## Run on Windows
 
-If you already have `WireJudgeLive.exe`, double-click it. To build your own copy:
+To build your own copy:
 
 1. Clone this repository or download and extract the ZIP from GitHub.
 2. Install Python 3.11 or newer, then double-click `build.bat` in the project root.
