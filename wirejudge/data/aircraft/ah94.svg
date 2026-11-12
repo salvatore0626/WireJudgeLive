@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 104" width="100" height="104">
+  <title>AH-94 helicopter wireframe</title>
+  <g fill="none" stroke="#fff" stroke-linecap="round" stroke-linejoin="round">
+    <polygon stroke-width="1.65"
+      points="50,9 54,12 57,18 59,31 60,43 73,42 74,48 61,52
+              61,59 58,65 54,73 53,78 64,77 64,82 53,84
+              53,89 52,97 50,101 48,97 47,89 47,84 36,82
+              36,77 47,78 46,73 42,65 39,59 39,52 26,48
+              27,42 40,43 41,31 43,18 46,12"/>
+    <g stroke-width="1.05">
+      <polygon id="canopy" points="50,15 54,19 56,31 55,37 45,37 44,31 46,19"/>
+      <polyline id="canopy-ridge" points="50,15 50,22 50,29 50,33 50,37" data-heights="0 4 4 6 0"/>
+      <polyline id="canopy-divider" points="44.5,28 50,28 55.5,28" data-heights="0 4 0"/>
+      <polyline id="port-engine" points="41,40 43,44 43,56 42,62"/>
+      <polyline id="starboard-engine" points="59,40 57,44 57,56 58,62"/>
+      <polyline id="rotor-mast" points="50,49 50,49" data-heights="0 14"/>
+      <polygon id="lower-hub" points="46,46 54,46 56,49 54,52 46,52 44,49" data-heights="9 9 9 9 9 9"/>
+      <polygon id="upper-hub" points="47,46 53,46 55,49 53,52 47,52 45,49" data-heights="14 14 14 14 14 14"/>
+      <polygon id="rotor-disc" stroke-width=".75"
+        points="50,3 62,5 73,9 82.5,16.5 90,26 94,37 96,49
+                94,61 90,72 82.5,81.5 73,89 62,93 50,95 38,93
+                27,89 17.5,81.5 10,72 6,61 4,49 6,37 10,26 17.5,16.5 27,9 38,5"
+        data-heights="12 12 12 12 12 12 12 12 12 12 12 12 12 12 12 12 12 12 12 12 12 12 12 12"/>
+      <polygon id="ducted-tail-rotor" points="50,84 50,87 50,92 50,96 50,97 50,94 50,89 50,85"
+        data-heights="4 7 8 6 2 -1 -2 0"/>
+      <polyline id="tail-fin" points="50,81 50,94 50,98 50,96" data-heights="0 14 14 6"/>
+      <polyline id="port-fin" points="36,77 36,81 36,84 36,82" data-heights="0 7 6 -4"/>
+      <polyline id="starboard-fin" points="64,77 64,81 64,84 64,82" data-heights="0 7 6 -4"/>
+      <polyline id="port-strut" points="43,39 42,41" data-heights="0 -9"/>
+      <polyline id="starboard-strut" points="57,39 58,41" data-heights="0 -9"/>
+      <polyline id="tail-strut" points="50,78 50,80" data-heights="0 -7"/>
+      <polygon id="port-wheel" points="42,38.5 42,39.5 42,42.5 42,43.5 42,42.5 42,39.5" data-heights="-9 -11 -11 -9 -7 -7"/>
+      <polygon id="starboard-wheel" points="58,38.5 58,39.5 58,42.5 58,43.5 58,42.5 58,39.5" data-heights="-9 -11 -11 -9 -7 -7"/>
+      <polygon id="tail-wheel" points="50,78.5 50,79 50,81 50,81.5 50,81 50,79" data-heights="-7 -8.5 -8.5 -7 -5.5 -5.5"/>
+    </g>
+  </g>
+</svg>

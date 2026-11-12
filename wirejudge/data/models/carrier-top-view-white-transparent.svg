@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="198 58 325 1116" width="325" height="1116" role="img" aria-labelledby="title description">
+  <title id="title">Carrier 78 top-view wireframe</title>
+  <desc id="description">Vector trace of the flight deck, angled landing area, island, and deck guides. Bow points up. Coordinates are in screenshot pixels. Wire positions and elevations are unspecified.</desc>
+  <g fill="none" stroke-linejoin="round" stroke-linecap="round">
+    <path id="deck-outline" stroke="#ffffff" stroke-width="3.5"
+          d="M 327,84 L 410,84 431,326 485,444 488,491 486,618
+             495,617 495,712 487,713 485,1049 433,1101 435,1135
+             357,1147 303,1132 296,1051 233,1038 232,901 238,893
+             238,828 228,819 228,769 239,757 239,665 243,646
+             242,575 233,543 233,414 299,332 Z"/>
+    <path id="landing-area" stroke="#ffffff" stroke-width="2.5"
+          d="M 234,414 L 294,338 434,1134 357,1147 Z"/>
+    <path id="landing-centerline" stroke="#ffffff" stroke-width="1.9"
+          stroke-dasharray="13 9" d="M 265,373 L 396,1140"/>
+    <path id="bow-deck-guides" stroke="#ffffff" stroke-width="1.8"
+          d="M 342,123 L 351,417 M 400,121 L 423,414"/>
+    <path id="port-deck-guides" stroke="#ffffff" stroke-width="1.8"
+          d="M 261,408 L 259,773 M 279,387 L 308,753"/>
+  </g>
+</svg>

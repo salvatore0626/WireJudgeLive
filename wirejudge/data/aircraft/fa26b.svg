@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 104" width="100" height="104">
+  <title>F/A-26B overhead wireframe</title>
+  <g fill="none" stroke="#fff" stroke-linecap="round" stroke-linejoin="round">
+    <polygon stroke-width="1.65"
+      points="50,3 53.5,9 56,18 58,30 62.5,30 63,40 65.5,50
+              91,75 83.5,83 61.5,76 61.5,81 80,94 76.5,102 60,97 57,89
+              56.5,95 55,97 51,97 50,93 49,97 45,97 43.5,95 43,89
+              40,97 23.5,102 20,94 38.5,81 38.5,76 16.5,83 9,75
+              34.5,50 37,40 37.5,30 42,30 44,18 46.5,9"/>
+    <g stroke-width="1.05">
+      <polygon points="50,13 52.5,17 54,23 54,29 52.5,33 47.5,33 46,29 46,23 47.5,17"/>
+      <polyline points="42,30 42,41 43,51 43,89"/>
+      <polyline points="58,30 58,41 57,51 57,89"/>
+      <polyline points="14,71 22,77 36,73"/>
+      <polyline points="86,71 78,77 64,73"/>
+      <polyline points="39,81 34,90 26,96"/>
+      <polyline points="61,81 66,90 74,96"/>
+      <polyline points="50,72 50,93"/>
+      <polyline points="43.5,91 49.5,91"/>
+      <polyline points="50.5,91 56.5,91"/>
+      <polyline id="canopy-ridge" points="50,13 50,20 50,28 50,33" data-heights="0 5 4 0"/>
+      <polyline id="port-fin" points="43,76 39,81 36,89 43,90" data-heights="0 13 12 0"/>
+      <polyline id="starboard-fin" points="57,76 61,81 64,89 57,90" data-heights="0 13 12 0"/>
+      <polyline id="nose-strut" data-when="gear" points="50,26.00 50,28.00" data-heights="0.00 -11.00"/>
+      <polygon id="nose-wheel" data-when="gear" points="50,31.00 50,30.12 50,28.00 50,25.88 50,25.00 50,25.88 50,28.00 50,30.12" data-heights="-11.00 -8.88 -8.00 -8.88 -11.00 -13.12 -14.00 -13.12"/>
+      <polyline id="port-strut" data-when="gear" points="41,60.00 41,62.00" data-heights="0.00 -11.00"/>
+      <polygon id="port-wheel" data-when="gear" points="41,65.00 41,64.12 41,62.00 41,59.88 41,59.00 41,59.88 41,62.00 41,64.12" data-heights="-11.00 -8.88 -8.00 -8.88 -11.00 -13.12 -14.00 -13.12"/>
+      <polyline id="starboard-strut" data-when="gear" points="59,60.00 59,62.00" data-heights="0.00 -11.00"/>
+      <polygon id="starboard-wheel" data-when="gear" points="59,65.00 59,64.12 59,62.00 59,59.88 59,59.00 59,59.88 59,62.00 59,64.12" data-heights="-11.00 -8.88 -8.00 -8.88 -11.00 -13.12 -14.00 -13.12"/>
+      <polyline id="tailhook" data-when="hook" points="50,79.00 50,89.00 50,93.00 50,91.00" data-heights="0.00 -10.00 -12.00 -10.00"/>
+    </g>
+  </g>
+</svg>

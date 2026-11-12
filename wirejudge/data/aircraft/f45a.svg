@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 104" width="100" height="104">
+  <title>F-45A overhead wireframe</title>
+  <g fill="none" stroke="#fff" stroke-linecap="round" stroke-linejoin="round">
+    <polygon id="silhouette" stroke-width="1.65" points="50.00,5.00 46.51,13.79 44.33,28.77 42.86,36.70 39.92,33.17 38.34,35.92 26.93,44.75 27.08,47.79 37.70,50.69 37.57,52.46 35.13,57.04 14.54,74.11 14.28,84.55 38.27,90.41 38.17,97.26 44.18,98.71 45.37,94.17 46.06,97.34 53.25,97.10 53.97,94.10 55.23,98.83 62.18,97.32 62.41,90.25 85.40,84.57 85.19,73.90 64.04,56.65 61.65,52.10 61.42,50.25 71.91,47.55 72.15,44.32 61.09,35.80 59.55,32.96 56.14,36.15 53.20,13.75 53.35,13.74"/>
+    <g stroke-width="1.05">
+      <polyline id="canopy" points="49.63,16.17 51.93,18.00 53.42,24.10 53.83,30.03 50.25,31.89 45.66,29.92 45.56,24.07 47.00,18.58 49.63,16.17"/>
+      <polyline id="lift-fan" points="52.01,31.92 53.95,32.88 54.99,42.71 53.00,44.03 49.95,43.31 46.53,44.07 44.21,42.78 44.85,33.35 46.62,31.88 49.37,32.72"/>
+      <polyline id="port-flap" points="18.70,85.54 18.57,80.73 38.04,85.56"/>
+      <polyline id="starboard-flap" points="80.88,80.83 61.98,85.04 62.49,89.87"/>
+      <polyline id="port-tail" points="40.06,82.58 39.36,90.35 39.42,96.05"/>
+      <polyline id="starboard-tail" points="60.13,80.08 59.53,89.24 58.85,95.55"/>
+      <polyline id="exhaust-seam" points="45.49,94.07 54.01,93.98"/>
+      <polyline id="canopy-ridge" points="49.63,16.17 49.7,22 49.9,28 50.25,31.89" data-heights="0 6 5 0"/>
+      <polyline id="port-fin" points="40.06,82.58 34.7,86.3 34.5,92 39.42,96.05" data-heights="0 13 12 0"/>
+      <polyline id="starboard-fin" points="60.13,80.08 65.4,84.3 65,90.5 58.85,95.55" data-heights="0 13 12 0"/>
+      <polyline id="nose-strut" data-when="gear" points="50,25.00 50,27.00" data-heights="0.00 -12.00"/>
+      <polygon id="nose-wheel" data-when="gear" points="50,30.00 50,29.12 50,27.00 50,24.88 50,24.00 50,24.88 50,27.00 50,29.12" data-heights="-12.00 -9.88 -9.00 -9.88 -12.00 -14.12 -15.00 -14.12"/>
+      <polyline id="port-strut" data-when="gear" points="41,63.00 41,65.00" data-heights="0.00 -12.00"/>
+      <polygon id="port-wheel" data-when="gear" points="41,68.00 41,67.12 41,65.00 41,62.88 41,62.00 41,62.88 41,65.00 41,67.12" data-heights="-12.00 -9.88 -9.00 -9.88 -12.00 -14.12 -15.00 -14.12"/>
+      <polyline id="starboard-strut" data-when="gear" points="59,63.00 59,65.00" data-heights="0.00 -12.00"/>
+      <polygon id="starboard-wheel" data-when="gear" points="59,68.00 59,67.12 59,65.00 59,62.88 59,62.00 59,62.88 59,65.00 59,67.12" data-heights="-12.00 -9.88 -9.00 -9.88 -12.00 -14.12 -15.00 -14.12"/>
+      <polyline id="tailhook" data-when="hook" points="50,79.00 50,89.00 50,93.00 50,91.00" data-heights="0.00 -11.00 -13.00 -11.00"/>
+    </g>
+  </g>
+</svg>
