@@ -9,7 +9,7 @@ If you already have `WireJudgeLive.exe`, double-click it. To build your own copy
 
 1. Clone this repository or download and extract the ZIP from GitHub.
 2. Install Python 3.11 or newer, then double-click `build.bat` in the project root.
-3. Open `dist\WireJudgeLive.exe`. You can share this single file with other players.
+3. Open `WireJudgeLive.exe` next to `build.bat`. You can share this single file with other players.
 
 ## Run from source
 

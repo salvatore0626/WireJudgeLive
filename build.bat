@@ -36,16 +36,16 @@ echo Building Wire Judge Live...
     --name WireJudgeLive ^
     --specpath "%BUILD_DIR%" ^
     --workpath "%BUILD_DIR%\pyinstaller" ^
-    --distpath dist ^
+    --distpath "%CD%" ^
     --add-data "%CD%\wirejudge\data:wirejudge/data" ^
     --icon "%CD%\wirejudge\data\app_icon.ico" ^
     --hidden-import OpenGL.platform.win32 ^
     "%CD%\app.py"
 if errorlevel 1 goto build_failed
-if not exist "dist\WireJudgeLive.exe" goto build_failed
+if not exist "WireJudgeLive.exe" goto build_failed
 
 echo.
-echo Built "%CD%\dist\WireJudgeLive.exe"
+echo Built "%CD%\WireJudgeLive.exe"
 set "BUILD_RESULT=0"
 goto finish
 
