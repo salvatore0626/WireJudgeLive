@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (QHBoxLayout, QLabel, QPushButton, QDoubleSpinBox,
 from wirejudge.approach.approach_view import ApproachView
 from wirejudge.ui.control_icons import approach_case_badge
 from wirejudge.approach.attempt_store import AttemptWorker
+from wirejudge.approach.track_loading import TrackLoading
 from wirejudge.scoring.landing_scoring import DEFAULT_RULES
 
 
@@ -21,6 +22,8 @@ class AttemptEditor(ApproachView):
         self.tree.setColumnCount(1)
         self.tree.setHeaderLabels(['Username / Airframe / Attempt'])
         self.worker = AttemptWorker(); self.worker.start()
+        self.life_worker = AttemptWorker(self.worker.results)
+        self.life_worker.start()
         self.path = None; self.selected_id = None
         self.recording_path = None
         self.list_signature = None
@@ -35,6 +38,9 @@ class AttemptEditor(ApproachView):
         self.bounds = None; self.draft = None
         self.full_extent = None
         self.track_key = None
+        self.track_pending = False
+        self.load_progress = {'read': 0., 'lives': 0.}
+        self.loading_lives = False
         self.track_token = 0
         self.track_points = np.empty((0, 3))
         self.track_wire_points = np.empty((0, 2))
@@ -112,6 +118,18 @@ class AttemptEditor(ApproachView):
         self.track_map.setMenuEnabled(False)
         self.track_map.setMinimumHeight(150)
         self.track_map.showGrid(x=True, y=True, alpha=.15)
+        self.track_loading = TrackLoading(self.track_map.viewport())
+        track_status = QHBoxLayout()
+        self.track_status = QLabel()
+        self.track_status.setTextFormat(Qt.TextFormat.PlainText)
+        self.track_status.setWordWrap(True)
+        self.track_retry = QPushButton('Retry')
+        self.track_retry.clicked.connect(self.retry_track_map)
+        self.track_retry.hide()
+        track_status.addWidget(self.track_status, 1)
+        track_status.addWidget(self.track_retry)
+        self.track_status.hide()
+        col.addLayout(track_status)
         self.track_localizer = self.track_map.plot(connect='finite')
         self.track_centerline = self.track_map.plot()
         self.track_grade_gates = self.track_map.plot(connect='finite')
@@ -211,36 +229,53 @@ class AttemptEditor(ApproachView):
 
     def install_lives(self, lives):
         old_pilot = self.pilot_choice.currentText()
+        old_life = self.life_choice.currentData()
+        attempt = self.current_attempt()
         self.lives = lives
         pilots = sorted({life['pilot'] for life in lives}, key=str.casefold)
         self.pilot_choice.blockSignals(True)
         self.pilot_choice.clear()
         self.pilot_choice.addItems(pilots)
-        attempt = self.current_attempt()
-        selected = old_pilot or (attempt['pilot'] if attempt else '')
-        if selected in pilots:
-            self.pilot_choice.setCurrentText(selected)
+        if attempt:
+            self.pilot_choice.setCurrentIndex(self.pilot_choice.findText(attempt['pilot']))
+        elif old_pilot in pilots:
+            self.pilot_choice.setCurrentText(old_pilot)
         self.pilot_choice.blockSignals(False)
-        self.select_pilot()
+        self.populate_life_choices(attempt)
+        self.sync_range(preserve=self.life_key(old_life) == self.life_key(self.life_choice.currentData()))
+        self.draw_lives()
+        self.set_controls(bool(self.bounds))
+        if old_life is None or old_pilot != self.pilot_choice.currentText():
+            self.fit_lives()
 
     def select_pilot(self, *_):
         previous = self.life_choice.currentData()
+        attempt = self.current_attempt()
+        if attempt and attempt['pilot'] != self.pilot_choice.currentText():
+            self.tree.setCurrentItem(None)
+            attempt = None
+        self.populate_life_choices(attempt)
+        self.select_life(preserve=bool(previous and self.life_key(previous)==self.life_key(self.life_choice.currentData())))
+        if not previous or previous['pilot'] != self.pilot_choice.currentText():
+            self.fit_lives()
+
+    def populate_life_choices(self, attempt):
+        previous_key = self.life_key(self.life_choice.currentData())
         self.life_choice.blockSignals(True)
         self.life_choice.clear()
         origin = self.origin or 0.
+        preferred = -1
         for life in self.lives:
             if life['pilot'] == self.pilot_choice.currentText():
                 self.life_choice.addItem(
                     f"{life.get('airframe') or 'Aircraft'} · {self.time_text(life['start_s']-origin)}", life)
-                if self.life_key(previous) == self.life_key(life):
-                    self.life_choice.setCurrentIndex(self.life_choice.count()-1)
+                if attempt and self.life_matches(life, attempt):
+                    preferred = self.life_choice.count() - 1
+                elif not attempt and previous_key == self.life_key(life):
+                    preferred = self.life_choice.count() - 1
+        if attempt or preferred >= 0:
+            self.life_choice.setCurrentIndex(preferred)
         self.life_choice.blockSignals(False)
-        attempt = self.current_attempt()
-        if attempt and attempt['pilot'] != self.pilot_choice.currentText():
-            self.tree.setCurrentItem(None)
-        self.select_life(preserve=bool(previous and self.life_key(previous)==self.life_key(self.life_choice.currentData())))
-        if not previous or previous['pilot'] != self.pilot_choice.currentText():
-            self.fit_lives()
 
     def select_life(self, *_, preserve=False):
         life = self.life_choice.currentData()
@@ -347,7 +382,31 @@ class AttemptEditor(ApproachView):
             return
         self.track_key = key
         self.track_token += 1
+        self.track_pending = True
+        self.load_progress['read'] = 0.
+        self.set_track_status()
+        self.update_loading()
         self.worker.request('read', self.path, attempt, self.track_token, start=start, end=end)
+
+    def update_loading(self):
+        if self.track_pending or self.life_pending:
+            if not self.track_loading.timer.isActive():
+                self.loading_lives = False
+            self.loading_lives = self.loading_lives or self.life_pending
+            progress = (.7 * self.load_progress['lives'] + .3 * self.load_progress['read']
+                        if self.loading_lives else self.load_progress['read'])
+            self.track_loading.set_loading('Loading attempt editor…', min(.99, progress))
+        else:
+            self.track_loading.set_loading('')
+
+    def set_track_status(self, message='', retry=False):
+        self.track_status.setText(message)
+        self.track_status.setVisible(bool(message))
+        self.track_retry.setVisible(retry)
+
+    def retry_track_map(self):
+        self.track_key = None
+        self.load_track_map()
 
     def draw_track_map(self):
         self.draw_approach_guide()
@@ -418,7 +477,11 @@ class AttemptEditor(ApproachView):
 
     def clear_track_map(self):
         self.track_key = None
+        self.track_pending = False
         self.track_token += 1
+        self.worker.read_token = self.track_token
+        self.set_track_status()
+        self.update_loading()
         self.track_points = np.empty((0, 3))
         self.track_wire_points = np.empty((0, 2))
         self.track_deck_points = np.empty((0, 2))
@@ -447,7 +510,10 @@ class AttemptEditor(ApproachView):
             track = self.life_plot.plot([start-origin, end-origin], [lane, lane],
                                         pen=pg.mkPen(color, width=3), symbol='o', symbolSize=4)
             track.setCurveClickable(True, width=9)
-            track.sigClicked.connect(lambda *_, i=lane: self.select_timeline_life(i))
+            # Selection can rebuild the timeline. Wait until PyQtGraph has
+            # finished handling the click on the current curve.
+            track.sigClicked.connect(
+                lambda *_, i=lane: QTimer.singleShot(0, self, lambda: self.select_timeline_life(i)))
             self.life_items.append(track)
             for a in attempts:
                 if (a['connection_id'], a['aircraft_id']) != (life['connection_id'], life['aircraft_id']):
@@ -459,14 +525,15 @@ class AttemptEditor(ApproachView):
                     pen=pg.mkPen(outcome_color(a['outcome']), width=11 if a['id']==self.selected_id else 7))
                 bar.setZValue(1)
                 bar.setCurveClickable(True, width=12)
-                bar.sigClicked.connect(lambda *_, i=lane, identifier=a['id']: self.select_timeline_attempt(i, identifier))
+                bar.sigClicked.connect(
+                    lambda *_, identifier=a['id']: QTimer.singleShot(
+                        0, self, lambda: self.select_timeline_attempt(identifier)))
                 self.life_items.append(bar)
         self.life_plot.getAxis('left').setTicks([ticks])
         self.life_plot.setYRange(-.6, max(0, len(lives)-1)+.6, padding=0)
         self.update_full_timeline()
 
-    def select_timeline_attempt(self, lane, identifier):
-        self.life_choice.setCurrentIndex(lane)
+    def select_timeline_attempt(self, identifier):
         if identifier in self.items:
             self.tree.setCurrentItem(self.items[identifier])
 
@@ -550,17 +617,20 @@ class AttemptEditor(ApproachView):
                 self.clear_track_map()
             if attempt:
                 self.path = self.capture.attempt_path(key, self.recording_path)
-                if self.pilot_choice.findText(attempt['pilot']) >= 0:
-                    self.pilot_choice.setCurrentText(attempt['pilot'])
-                    for i in range(self.life_choice.count()):
-                        if self.life_matches(self.life_choice.itemData(i), attempt):
-                            self.life_choice.setCurrentIndex(i)
-                            break
+                self.pilot_choice.blockSignals(True)
+                self.pilot_choice.setCurrentIndex(self.pilot_choice.findText(attempt['pilot']))
+                self.pilot_choice.blockSignals(False)
+                self.populate_life_choices(attempt)
                 self.draft = [attempt['start_s'], attempt['end_s'] or attempt['last_s']]
                 self.case_type.blockSignals(True)
                 self.case_type.setCurrentText(attempt.get('case', 'Case 1'))
                 self.case_type.blockSignals(False)
             self.sync_range()
+            self.draw_lives()
+            if attempt and self.draft:
+                low, high = self.life_plot.getViewBox().viewRange()[0]
+                if not low <= self.draft[0] - (self.origin or 0.) <= self.draft[1] - (self.origin or 0.) <= high:
+                    self.fit_lives()
         elif attempt and not self.dirty:
             saved = [attempt['start_s'], attempt['end_s'] or attempt['last_s']]
             if self.draft != saved:
@@ -616,10 +686,11 @@ class AttemptEditor(ApproachView):
                 and now >= self.life_next_read and index_key != self.life_index_key):
             self.life_index_key = index_key
             self.life_pending = True
+            self.load_progress['lives'] = 0.
             self.life_next_read = now + 5.
             if not self.lives:
                 self.hint.setText('Indexing recorded aircraft lives…')
-            self.worker.request('lives', path, {'id': None}, self.token)
+            self.life_worker.request('lives', path, {'id': None}, self.token)
         a=self.current_attempt()
         path=self.capture.attempt_path(a['id'],path) if a else path
         if self.path != path:
@@ -627,12 +698,23 @@ class AttemptEditor(ApproachView):
             self.selected_id = None; self.draft = None; self.dirty = False
             self.sync_range()
             self.clear_track_map()
+            # Resolve the current selection immediately when its replay path arrives.
+            self.draw_selected()
         while True:
             try:r = self.worker.results.get_nowait()
             except queue.Empty:break
+            if r['kind'] == 'progress':
+                operation = r['operation']
+                valid = (r['path'] == self.recording_path if operation == 'lives' else
+                         r['path'] == self.path and r['token'] == self.track_token and r['id'] == self.selected_id)
+                if valid:
+                    self.load_progress[operation] = r['fraction']
+                continue
             if r['kind'] == 'read':
                 if r['token'] != self.track_token or r['path'] != self.path or r['id'] != self.selected_id:
                     continue
+                self.track_pending = False
+                self.load_progress['read'] = 1.
                 if not r['error']:
                     fit = not len(self.track_points)
                     self.track_points = np.asarray([p[:3] for p in r['track']], dtype=float).reshape((-1, 3))
@@ -643,21 +725,27 @@ class AttemptEditor(ApproachView):
                         [point for line in r['deck'] for point in (*line, (np.nan, np.nan))],
                         dtype=float).reshape((-1, 2))
                     self.draw_track_map()
+                    self.sync_range(preserve=True)
+                    self.set_controls(bool(self.bounds))
+                    self.set_track_status('No recorded approach track in this range.'
+                                          if not len(self.track_points) else '')
                     if fit:
                         self.track_map.autoRange()
+                    self.track_map.viewport().update()
+                else:
+                    self.set_track_status(f"Couldn't load the approach track. {r['error']}", retry=True)
                 continue
             if r['kind'] == 'lives':
                 if r['path'] == self.recording_path:
                     self.life_pending = False
+                    self.load_progress['lives'] = 1.
                     if r['error']:
                         self.life_index_key = None
                         self.hint.setText(r['error'])
                     else:
-                        had_lives = bool(self.lives)
                         self.install_lives(r['lives'])
-                        if not had_lives and self.current_attempt():
-                            self.selected_id = None
-                            self.draw_selected()
+                        self.draw_selected()
+                        self.track_map.viewport().update()
                         self.hint.setText('Drag the timeline range handles to add an attempt. Click an attempt bar to edit or delete it.'
                                           if self.lives else 'No recorded aircraft lives yet.')
                 continue
@@ -700,6 +788,8 @@ class AttemptEditor(ApproachView):
                         self.last_key = None
                     self.set_controls(bool(self.bounds))
                 continue
+        self.update_loading()
+
     def region_changed(self):
         self.update_boundary_labels()
         if self.current_attempt() and self.bounds and self.draft is not None:

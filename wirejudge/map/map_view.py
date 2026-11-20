@@ -59,6 +59,8 @@ class MapView(GLViewWidget):
         self.approach_case = 'Case 1'
         self.case1_glide_deg = 3.5
         self.case1_runway_offset_deg = 10.0
+        self.extended_centerline_nm = DEFAULTS['extended_centerline_nm']
+        self.extended_centerline_key = None
         self.span = 12 * 1852.0
         self.heading = -90.0
         self.north_up = True;self.carrier_up=False
@@ -97,7 +99,7 @@ class MapView(GLViewWidget):
         self.radar_par_sweep_visible = True
         self.radar_opacity = 1.
         self.radar_outline_key = None
-        self.procedure_visibility = dict.fromkeys(('marshal', 'approach', 'missed', 'glide', 'gates'), True)
+        self.procedure_visibility = dict.fromkeys(('marshal', 'approach', 'extended_centerline', 'missed', 'glide', 'gates'), True)
         self.label_units=DisplayUnits()
         self.glyph_revision = 0
         self.glyph_camera_key = None
@@ -135,6 +137,9 @@ class MapView(GLViewWidget):
         self.case_glide_fade = None
         self.addItem(self.case_fill)
         self.addItem(self.case_lines)
+        self.extended_centerline = ProcedureLines(glOptions=MAP_LINE_OPTIONS, mode='lines', width=1)
+        self.extended_centerline.hide()
+        self.addItem(self.extended_centerline)
         self.grade_gates = ProcedureLines(glOptions=MAP_LINE_OPTIONS, mode='lines', width=1)
         self.grade_gates.setDepthValue(101)
         self.grade_gates.setVisible(False)
@@ -215,6 +220,7 @@ class MapView(GLViewWidget):
             self.case_fill.opts['meshdata'].setVertexColors(vertex_colors(palette['glide'], .1 * opacity, wall_alpha))
             self.case_fill.meshDataChanged()
         self.grade_gates.setData(color=rgba(self.paint_color('chart_gate'), .95 * opacity))
+        self.extended_centerline.setData(color=rgba(palette['approach'], .85 * opacity))
         self.grade_gate_labels.set_opacity(opacity)
         self.case3_overlay.set_palette(palette, opacity)
         self.case1_marshal.set_palette(palette, opacity)
@@ -226,7 +232,7 @@ class MapView(GLViewWidget):
             self.set_procedure_colors(self.procedure_colors)
 
     def set_procedure_line_width(self, width):
-        for item in (self.case_lines, self.grade_gates, *self.case1_marshal.items, *self.case3_overlay.items):
+        for item in (self.case_lines, self.extended_centerline, self.grade_gates, *self.case1_marshal.items, *self.case3_overlay.items):
             if isinstance(item, ProcedureLines):
                 item.thickness = width
         self.update()
@@ -289,6 +295,9 @@ class MapView(GLViewWidget):
             self.north_up=False;self.carrier_up=True
         else:self.north_up=True;self.carrier_up=False
         self.apply_camera()
+
+    def camera_bearing(self):
+        return (self.reference_heading_deg - self.heading - 90.) % 360.
 
     def apply_camera(self):
         if self.north_up:self.heading=-90.+self.reference_heading_deg
@@ -481,9 +490,14 @@ class MapView(GLViewWidget):
         self.redraw_timer.start()
 
     def refresh_visible_map(self):
-        if not self.window().isMinimized():
-            self.holidays.tick(time.monotonic())
-        if not self.playback_paused and not self.window().isMinimized():
+        if self.window().isMinimized():
+            return
+        self.holidays.tick(time.monotonic())
+        wire_changed = any(spec[-1] for spec in self.wire_specs) and self.update_wire_glyphs()
+        if self.playback_paused:
+            if wire_changed:
+                self.update()
+        else:
             if self.deck_crew.enabled:
                 self.deck_crew.tick(time.monotonic())
             if self.carrier_flag_frames and self.is_3d and self.carrier_flag:
@@ -556,6 +570,12 @@ class MapView(GLViewWidget):
 
     def mouseDoubleClickEvent(self, event):
         if not self.vector_mode and event.button() == Qt.MouseButton.LeftButton and not self.north_indicator.contains(event.position()):
+            crew_id = self.pick_crew_at(event.position())
+            if crew_id is not None:
+                self.press_position = None
+                self.focus_crew(crew_id, zoom=False)
+                event.accept()
+                return
             instance = self.pick_at(event.position())
             if instance is not None:
                 self.press_position = None
@@ -618,7 +638,11 @@ class MapView(GLViewWidget):
             return
         if event.button()==Qt.MouseButton.LeftButton and self.press_position is not None:
             if not self.click_dragged and (event.position()-self.press_position).manhattanLength()<=5:
-                self.aircraft_clicked.emit(self.pick_at(event.position()))
+                crew_id = self.pick_crew_at(event.position())
+                if crew_id is not None:
+                    self.focus_crew(crew_id, zoom=False)
+                else:
+                    self.aircraft_clicked.emit(self.pick_at(event.position()))
         self.press_position=None
         event.accept()
 
@@ -651,6 +675,22 @@ class MapView(GLViewWidget):
             if distance<=radius:
                 candidates.append((distance,depth,instance))
         return min(candidates,key=lambda item:(item[0],item[1]))[2] if candidates else None
+
+    def pick_crew_at(self, position):
+        if not self.is_3d or self.span > 250:
+            return None
+        candidates = []
+        for crew_id, body in self.deck_crew.positions.items():
+            head = self.deck_crew.heads.get(crew_id, (body, ()))[0]
+            for point in (head, body):
+                projected = self.project_point(point)
+                if projected is None:
+                    continue
+                x, y, depth = projected
+                distance = math.hypot(x - position.x(), y - position.y())
+                if distance <= 8:
+                    candidates.append((distance, depth, crew_id))
+        return min(candidates)[2] if candidates else None
 
     def color_for(self,aircraft,sample):
         color = self.flight_colors.get(sample['source'],aircraft)
@@ -747,11 +787,12 @@ class MapView(GLViewWidget):
         self.update_focus_cursor()
         self.update()
 
-    def focus_crew(self, crew_id):
+    def focus_crew(self, crew_id, *, zoom=True):
         crew = self.deck_crew
         if not self.is_3d or crew.model is None or not any(p['id'] == crew_id for p in crew.model.people):
             return
-        self.span = 35.
+        if zoom:
+            self.span = 35.
         crew.sync_visibility(time.monotonic())
         if crew_id not in self.deck_crew.positions:
             self.apply_camera()
@@ -925,10 +966,13 @@ class MapView(GLViewWidget):
 
     def update_wire_glyphs(self):
         if not hasattr(self,'wire_mesh'):
-            return
-        key=(self.glyph_revision,self.span,self.width(),self.height(),self.heading,self.tilt,self.is_3d,self.devicePixelRatioF())
+            return False
+        has_broken_wires = any(broken for _, _, _, _, broken in self.wire_specs)
+        hide_broken = has_broken_wires and int(time.monotonic() * 6) % 2 == 1
+        key=(self.glyph_revision,self.span,self.width(),self.height(),self.heading,self.tilt,self.is_3d,
+             self.devicePixelRatioF(),hide_broken)
         if key==self.wire_camera_key:
-            return
+            return False
         self.wire_camera_key=key
         vertices=[];faces=[];colors=[]
         matrix=self.viewMatrix()
@@ -936,7 +980,9 @@ class MapView(GLViewWidget):
         right=np.array((r.x(),r.y(),r.z()))
         up=np.array((u.x(),u.y(),u.z()))
         half_width=self.span/max(1,self.width()*self.devicePixelRatioF())
-        for a,b,color,pixels in self.wire_specs:
+        for a,b,color,pixels,broken in self.wire_specs:
+            if broken and hide_broken:
+                continue
             a,b=np.asarray(a),np.asarray(b)
             delta=b-a
             sx,sy=float(np.dot(delta,right)),float(np.dot(delta,up))
@@ -951,6 +997,7 @@ class MapView(GLViewWidget):
         if faces:
             self.wire_mesh.setMeshData(vertexes=np.asarray(vertices,dtype=np.float32),
                 faces=np.asarray(faces,dtype=np.uint32),faceColors=np.asarray(colors,dtype=np.float32))
+        return True
 
     def update_selection(self):
         if not hasattr(self,'selection_lines'):
@@ -1019,6 +1066,7 @@ class MapView(GLViewWidget):
         self.selection_point=None
         self.selection_lines.setVisible(False)
         self.case_lines.setVisible(False)
+        self.extended_centerline.hide()
         self.case_fill.setVisible(False)
         self.case3_overlay.hide()
         self.case1_marshal.hide()
@@ -1081,6 +1129,30 @@ class MapView(GLViewWidget):
         self.snap_camera_to_deck()
         self.update_focus_cursor()
 
+    def update_extended_centerline(self, volume, transform):
+        length = self.extended_centerline_nm * NM
+        if not volume or not length or not self.procedure_visibility['extended_centerline']:
+            self.extended_centerline.hide()
+            return
+        x, y, z = volume['origin']
+        angle = math.radians(volume['runway_heading_deg'])
+        east, north = math.sin(angle), math.cos(angle)
+        start_point = transform([x, y, z], altitude=0.)
+        endpoint = transform([x - east * length, y, z - north * length], altitude=0.)
+        key = length, start_point, endpoint
+        self.extended_centerline.show()
+        if key == self.extended_centerline_key:
+            return
+        self.extended_centerline_key = key
+        start_point = np.asarray(start_point)
+        direction = (np.asarray(endpoint) - start_point) / length
+        dash = NM / 10
+        count = round(length / (.15 * NM))
+        starts = np.linspace(0., length - dash, count)
+        distances = np.column_stack((starts, starts + dash)).ravel()
+        vertices = start_point + distances[:, None] * direction
+        self.extended_centerline.setData(pos=vertices.astype(np.float32))
+
     def update_grade_gates(self, volume, sea_offset, transform, rules):
         visible = volume is not None and self.procedure_visibility['gates']
         self.grade_gates.setVisible(visible)
@@ -1113,7 +1185,7 @@ class MapView(GLViewWidget):
 
     def render_telemetry(self, sample, history, carrier_id=None, locked=False,
                          trails=True, verticals=True, vectors=True, scoring_rules=None, rtb_context=None,
-                         live_data=None):
+                         live_data=None, marshal_assignments=()):
         if not hasattr(self, 'aircraft_mesh'):
             self.clear_telemetry()
         if not sample:
@@ -1209,7 +1281,8 @@ class MapView(GLViewWidget):
         if self.approach_case=='Case 3' and selected and self.sea_level_known:
             self.case3_overlay.update(selected,sea_offset,self.case1_glide_deg,
                 self.case1_runway_offset_deg,self.is_3d,transform_procedure,key,self.label_units,self.procedure_visibility,
-                show_labels=self.procedure_labels_visible, final_stop_m=final_stop_m)
+                show_labels=self.procedure_labels_visible, final_stop_m=final_stop_m,
+                marshal_assignments=marshal_assignments)
         else:self.case3_overlay.hide()
         if self.approach_case=='Case 1' and selected and self.sea_level_known:
             self.case1_marshal.update(selected,sea_offset,self.case1_glide_deg,
@@ -1218,6 +1291,7 @@ class MapView(GLViewWidget):
         else:self.case1_marshal.hide()
 
         volume = case1_volume(selected, self.case1_glide_deg, self.case1_runway_offset_deg) if selected else None
+        self.update_extended_centerline(volume, transform)
         self.update_grade_gates(volume, sea_offset, transform, rules)
         if self.approach_case != 'Case 1' or not self.procedure_visibility['glide']:
             volume = None
@@ -1301,12 +1375,13 @@ class MapView(GLViewWidget):
                         details.extend((a, b))
                         detail_colors.extend((rgba(self.paint_color(role)),) * 2)
             for cable in ship.get('cables') or []:
-                color = rgba(self.paint_color('warning' if cable.get('broken') else ('on'
+                broken = bool(cable.get('broken'))
+                color = rgba(self.paint_color('warning' if broken else ('on'
                     if cable.get('hook_component_id') else 'carrier')))
                 a=transform(cable.get('endpoint1_world_m'))
                 b=transform(cable.get('endpoint2_world_m'))
                 if a is not None and b is not None:
-                    self.wire_specs.append((a,b,color,3 if cable.get('broken') or cable.get('hook_component_id') else 2))
+                    self.wire_specs.append((a,b,color,3 if broken or cable.get('hook_component_id') else 2,broken))
         altitude_segments=[];altitude_colors=[]
         for contact in sample['aircraft']:
             a = live_aircraft.get(contact['instance_id'], contact)
@@ -1357,15 +1432,18 @@ class MapView(GLViewWidget):
             if verticals and self.is_3d and self.sea_level_known and deck_height is None:
                 altitude_segments.extend((p,(p[0],p[1],0)))
                 altitude_colors.extend(((*color[:3],.4),)*2)
-            reference_heading=(reference.get('derived') or {}).get('heading_deg') if reference else 0
-            directions=arrow_directions(k.get('rotation_xyzw'),reference_heading or 0)
+            attitude_k, attitude_ship = contact.get('_radar_attitude', (contact_k, reference))
+            attitude_reference = (attitude_ship if locked_ship and attitude_ship and
+                                  attitude_ship['instance_id'] == locked_ship['instance_id'] else locked_ship)
+            reference_heading = (attitude_reference.get('derived') or {}).get('heading_deg') if attitude_reference else 0
+            directions=arrow_directions(attitude_k.get('rotation_xyzw'),reference_heading or 0)
             gear_down = gear_state(systems.get('gear')) == 'down'
             hook_down = (systems.get('tailhook') or {}).get('isDeployed') is True
             self.marker_specs.append((a['instance_id'],p,directions,color,gear_down,hook_down))
             self.airframe_keys[a['instance_id']] = airframe_key((a.get('identity') or {}).get('player_vehicle'))
-            heading=f.get('heading')
+            heading=(attitude_k.get('flight_info') or {}).get('heading')
             if not isinstance(heading,(int,float)) or isinstance(heading,bool) or not math.isfinite(heading):
-                heading=heading_from_quaternion(k.get('rotation_xyzw'))
+                heading=heading_from_quaternion(attitude_k.get('rotation_xyzw'))
             self.radar_specs.append((a['instance_id'],p,(heading-(reference_heading or 0))%360 if heading is not None else None,color))
             if self.label_fields:
                 instance = a['instance_id']

@@ -6,6 +6,7 @@ The capture owner holds its lock when calling this model.
 import math
 import uuid
 from wirejudge.approach.approach_geometry import case1_volume, point, NM, inside_ils
+from wirejudge.approach.aircraft_track import track_observation
 from wirejudge.telemetry.telemetry_protocol import heading_from_quaternion
 from wirejudge.aircraft.pilot_identity import pilot_identity
 
@@ -66,6 +67,9 @@ class ApproachDetector:
         self.last_clock = None
         self.session_start = None
         self.cables = {}
+        self.tracks = {}
+        self.track_restarts = {}
+        self.present_aircraft = set()
 
     def configure(self, case, glide, offset):
         # Detection geometry is preserved as provenance; scoring rules remain editable.
@@ -76,6 +80,9 @@ class ApproachDetector:
         self.session = self.last_clock = None
         self.session_start = None
         self.cables.clear()
+        self.tracks.clear()
+        self.track_restarts.clear()
+        self.present_aircraft.clear()
         self.revision += 1
 
     @staticmethod
@@ -93,7 +100,8 @@ class ApproachDetector:
         return {'attempt':self.metadata(attempt)}
 
     def stop(self):
-        return [self.finish(a, 'Interrupted', a['last_s']) for a in list(self.active.values())]
+        return [self.finish(a, 'Interrupted' if a['aircraft_id'] in self.present_aircraft else 'Track lost',
+                            a['last_s']) for a in list(self.active.values())]
 
     def process(self, sample, recent_scoring=None):
         rx, source = sample['capture'], sample.get('source') or {}
@@ -107,6 +115,8 @@ class ApproachDetector:
             events.extend(self.stop()); self.blocked.clear()
             self.session_start = None
             self.cables.clear()
+            self.tracks.clear()
+            self.track_restarts.clear()
         if self.session_start is None:
             self.session_start = when
         gap = self.last_clock is not None and clock-self.last_clock > 2.
@@ -115,16 +125,46 @@ class ApproachDetector:
         # Compute once per ship per incoming frame, rather than once per aircraft.
         volumes = {key:case1_volume(c, self.glide, self.offset) for key,c in carriers.items()}
         wire_carriers = {wire: ship for ship, volume in volumes.items() if volume
-                         for wire in volume['wire_ids']}
+                         for wire in volume['wire_ids'] if wire is not None}
         aircrafts = {a['instance_id']:a for a in sample.get('aircraft', [])}
+        self.present_aircraft = set(aircrafts)
+        translation = (sample.get('derived') or {}).get('world_translation_m') or (0., 0., 0.)
+        # A confirmed return by the same human in a different aircraft can close
+        # an old missing attempt without guessing from a display name.
+        returning_owners = {}
+        for key, aircraft in aircrafts.items():
+            identity = aircraft.get('identity') or {}
+            owner = identity.get('control_owner_id')
+            if identity.get('is_human') and owner:
+                returning_owners.setdefault(owner, set()).add(key)
         for key, active in list(self.active.items()):
             if key not in aircrafts:
-                events.append(self.finish(active, 'Track lost', active['last_s']))
+                active['_abort_since'] = None
+                identity = active['identity']
+                owner = identity.get('control_owner_id')
+                if identity.get('is_human') and len(returning_owners.get(owner, ())) == 1:
+                    events.append(self.finish(active, 'Track lost', active['last_s']))
         for key, aircraft in aircrafts.items():
             active = self.active.get(key)
-            f = (aircraft.get('kinematics') or {}).get('flight_info') or {}
+            identity = aircraft.get('identity') or {}
+            pilot, airframe = pilot_identity(identity, key)
+            kinematics = aircraft.get('kinematics') or {}
+            self.tracks[key], restarted = track_observation(
+                self.tracks.get(key), airframe, kinematics, translation, when)
+            if restarted:
+                if active is not None:
+                    events.append(self.finish(active, 'Track lost', active['last_s']))
+                    active = None
+                self.track_restarts[key] = when
+                self.blocked.discard(key)
+                self.cables.pop(key, None)
+            f = kinematics.get('flight_info') or {}
             cable = (aircraft.get('landing') or {}).get('current_cable_id')
             caught_ship = wire_carriers.get(cable) if cable != self.cables.get(key) else None
+            if active is not None and caught_ship is not None and caught_ship != active['carrier_id']:
+                # A confirmed wire catch identifies the recovery carrier.
+                events.append(self.finish(active, 'Aborted', active['last_s']))
+                active = None
             if cable is None:
                 self.cables.pop(key, None)
             else:
@@ -136,14 +176,14 @@ class ApproachDetector:
                     m = measurement(aircraft, volume, self.glide) if volume else None
                     gate = (inside_ils(m['gs'],m['loc']) if self.case == 'Case 1' else abs(m['loc'] or 0)<=10) if m else False
                     if m and 0 < m['aft'] <= self.entry_nm[self.case]*NM and gate:
-                        candidates.append((m['aft'], ship, volume, m))
+                        candidates.append((math.hypot(m['aft'], m['left']), ship, volume, m))
                 case, start = self.case, when
                 if caught_ship is not None:
                     ship, volume = caught_ship, volumes[caught_ship]
                     m = measurement(aircraft, volume, self.glide)
                     if m is None:
                         continue
-                    case, start = 'Case 1', max(self.session_start, when - 60.)
+                    case, start = 'Case 1', max(self.track_restarts.get(key, self.session_start), when - 60.)
                     if recent_scoring is not None:
                         backfill = [[row[0], row[2], row[4] - self.glide if row[4] is not None else None,
                                      row[5], row[6]] for row in recent_scoring(session, key, ship, start)]
@@ -163,13 +203,11 @@ class ApproachDetector:
                     ]
                     if not candidates:
                         continue
-                    _, ship, volume, m = min(candidates, key=lambda c:c[0])
-                identity = aircraft.get('identity') or {}
-                pilot, airframe = pilot_identity(identity, key)
+                    _, ship, volume, m = min(candidates, key=lambda c:(c[0], str(c[1])))
                 unix = rx.get('unix_s')
                 active = {'id':uuid.uuid4().hex, 'aircraft_id':key, 'carrier_id':ship,
                     'pilot':pilot,
-                    'airframe':airframe, 'identity':dict(identity),
+                    'airframe':self.tracks[key].airframe, 'identity':dict(identity),
                     'carrier':carriers[ship].get('airport_name') or carriers[ship].get('actor_name') or str(ship),
                     'source':{k:source.get(k) for k in ('process_id', 'epoch')},
                     'connection_id':session, 'start_unix_s':unix - (when - start) if unix is not None else None,
@@ -187,7 +225,7 @@ class ApproachDetector:
                 volume = case1_volume(ship, active['glide_deg'], active['offset_deg']) if ship else None
                 m = measurement(aircraft, volume, active['glide_deg']) if volume else None
                 if m is None:
-                    events.append(self.finish(active, 'Geometry unavailable', active['last_s']))
+                    active['_abort_since'] = None
                     continue
             active['last_s'] = when
             active['last_unix_s']=rx.get('unix_s')
@@ -200,6 +238,11 @@ class ApproachDetector:
             if active['_catch_clock'] is None and cable is not None and cable in volume['wire_ids']:
                 active['wire'] = volume['wire_ids'].index(cable)+1
                 active['wire_catch_s']=when
+                kinematics = aircraft.get('kinematics') or {}
+                for field in ('base_mass_kg', 'mass_kg'):
+                    mass = kinematics.get(field)
+                    if number(mass) and mass > 0:
+                        active[field] = mass
                 active['_catch_clock']=clock
             if active['_catch_clock'] is not None:
                 elapsed = (when - active['wire_catch_s'] if active.get('gate_missed')

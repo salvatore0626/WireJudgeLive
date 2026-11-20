@@ -8,13 +8,15 @@ from wirejudge.approach.approach_geometry import case1_volume, final_fade_profil
 
 FT = .3048
 KNOT = NM / 3600
+MARSHAL_BASE_M = round(6000 * FT, 3)
+MARSHAL_BASE_DME = 21
 
 
 def turn_radius(knots, load=1.4):
     return (knots*KNOT)**2 / (9.80665*math.sqrt(load*load-1))
 
 
-def case3_geometry(carrier, sea_offset, glide=3.5, offset=10., final_stop_m=0.):
+def case3_geometry(carrier, sea_offset, glide=3.5, offset=10., final_stop_m=0., *, marshal_assignments=()):
     if sea_offset is None or not math.isfinite(sea_offset):return None
     volume=case1_volume(carrier,glide,offset)
     if volume is None:return None
@@ -31,7 +33,7 @@ def case3_geometry(carrier, sea_offset, glide=3.5, offset=10., final_stop_m=0.):
         a=math.radians(deviation)
         return at(radius*math.cos(a),radius*math.sin(a),asl)
 
-    vertices=[];faces=[];edges=[];routes=[];missed=[];glide_routes=[];marshal_routes=[]
+    vertices=[];faces=[];edges=[];routes=[];missed=[];glide_routes=[]
     # Slant-DME near/far boundaries and +/-2.5-degree localizer arcs at both heights.
     steps=8
     for dme in (3,10):
@@ -53,7 +55,7 @@ def case3_geometry(carrier, sea_offset, glide=3.5, offset=10., final_stop_m=0.):
         for a,b in ((i,stride+i),(2*stride+i,3*stride+i),(i,2*stride+i),(stride+i,3*stride+i)):
             edges.extend((vertices[a],vertices[b]))
 
-    iaf=fix(21,6000*FT);ten=fix(10,1200*FT);six=fix(6,1200*FT);three=fix(3,1200*FT)
+    iaf=fix(MARSHAL_BASE_DME,MARSHAL_BASE_M);ten=fix(10,1200*FT);six=fix(6,1200*FT);three=fix(3,1200*FT)
     # Dashed nominal descent cue, deliberately not a filled corridor beyond 10 DME.
     def dashed(a,b,destination,count=24):
         for i in range(0,count,2):
@@ -93,33 +95,43 @@ def case3_geometry(carrier, sea_offset, glide=3.5, offset=10., final_stop_m=0.):
     # Visible cross-sections at speed-change/intercept stations.
     for dme in (3,6,10):routes.extend((fix(dme,1200*FT,-ILS_LOC_FULL_SCALE_DEG),fix(dme,1200*FT,ILS_LOC_FULL_SCALE_DEG)))
 
-    # Inbound leg ends at IAF. Left racetrack, 60-second straight legs at 300 kt.
-    radius=turn_radius(300);leg=300*KNOT*60
-    aft=math.sqrt((21*NM)**2-(6000*FT-deck)**2)
-    hold=[]
-    for i in range(33):
-        a=math.pi*i/32;hold.append(at(aft-radius*math.sin(a),-radius+radius*math.cos(a),6000*FT))
-    hold.append(at(aft+leg,-2*radius,6000*FT))
-    for i in range(1,33):
-        a=math.pi+math.pi*i/32;hold.append(at(aft+leg-radius*math.sin(a),-radius+radius*math.cos(a),6000*FT))
-    hold.append(iaf)
-    for a,b in zip(hold,hold[1:]):marshal_routes.extend((a,b))
-
     def arrow(a,b,destination,length=230):
         dx,dz=b[0]-a[0],b[2]-a[2];norm=math.hypot(dx,dz)
         if norm<1e-9:return
         dx,dz=dx/norm,dz/norm
         destination.extend((b,[b[0]-dx*length-dz*length*.45,b[1],b[2]-dz*length+dx*length*.45],
                             b,[b[0]-dx*length+dz*length*.45,b[1],b[2]-dz*length-dx*length*.45]))
-    arrow(at(aft+leg*.65,0,6000*FT),at(aft+leg*.45,0,6000*FT),marshal_routes)
-    arrow(at(aft+leg*.35,-2*radius,6000*FT),at(aft+leg*.55,-2*radius,6000*FT),marshal_routes)
-    # IAF 3D octahedron, with a dashed sea-level stem.
-    size=150
-    diamond=[[iaf[0]+size,iaf[1],iaf[2]],[iaf[0],iaf[1],iaf[2]+size],
-             [iaf[0]-size,iaf[1],iaf[2]],[iaf[0],iaf[1],iaf[2]-size]]
-    for i,p in enumerate(diamond):
-        marshal_routes.extend((p,diamond[(i+1)%4],p,[iaf[0],iaf[1]+size,iaf[2]],p,[iaf[0],iaf[1]-size,iaf[2]]))
-    dashed([iaf[0],0,iaf[2]],iaf,marshal_routes,20)
+    # Each assigned flight gets the same left racetrack at its own slant-DME fix.
+    radius, leg = turn_radius(300), 300 * KNOT * 60
+    marshal_holds = []
+    assignments = [assignment for assignment in marshal_assignments if assignment[1] >= MARSHAL_BASE_M]
+    for flight, altitude, color in assignments or [(None, MARSHAL_BASE_M, None)]:
+        marshal_routes = []
+        dme = MARSHAL_BASE_DME + (altitude - MARSHAL_BASE_M) / (1000 * FT)
+        waypoint = fix(dme, altitude)
+        aft = math.hypot(waypoint[0] - origin[0], waypoint[2] - origin[2])
+        hold = []
+        for i in range(33):
+            angle = math.pi * i / 32
+            hold.append(at(aft - radius * math.sin(angle), radius * (math.cos(angle) - 1), altitude))
+        hold.append(at(aft + leg, -2 * radius, altitude))
+        for i in range(1, 33):
+            angle = math.pi + math.pi * i / 32
+            hold.append(at(aft + leg - radius * math.sin(angle), radius * (math.cos(angle) - 1), altitude))
+        hold.append(waypoint)
+        for a, b in zip(hold, hold[1:]):
+            marshal_routes.extend((a, b))
+        arrow(at(aft + leg * .65, 0, altitude), at(aft + leg * .45, 0, altitude), marshal_routes)
+        arrow(at(aft + leg * .35, -2 * radius, altitude), at(aft + leg * .55, -2 * radius, altitude), marshal_routes)
+        x, y, z = waypoint
+        size = 150
+        diamond = [(x + size, y, z), (x, y, z + size), (x - size, y, z), (x, y, z - size)]
+        for i, point in enumerate(diamond):
+            marshal_routes.extend((point, diamond[(i + 1) % 4], point, (x, y + size, z), point, (x, y - size, z)))
+        dashed([x, 0, z], waypoint, marshal_routes, 20)
+        location = f'{dme:.4g} DME - {altitude / FT:,.0f} ft ASL'
+        label = f'{flight}, {location}' if flight else f'{location}\n300kt 1min legs'
+        marshal_holds.append((waypoint, marshal_routes, label, color))
 
     # Reach 1,200 ft ASL after 2 NM of horizontal travel from wire 3.
     # Rate at 300 kt depends on the native deck ASL altitude.
@@ -149,8 +161,7 @@ def case3_geometry(carrier, sea_offset, glide=3.5, offset=10., final_stop_m=0.):
     for a,b in zip(missed_path,missed_path[1:]):missed.extend((a,b))
     arrow(missed_path[-2],outbound,missed)
     arrow(start,at(-four*.6,0,climb_height(four*.6)),missed)
-    labels=[(iaf,'21 DME - 6,000ft ASL\n300kt 1min legs'),
-            (ten,'10 DME - 1200 ft - 250kt'),(six,'6 DME - 1200 ft - 200kt'),
+    labels=[(ten,'10 DME - 1200 ft - 250kt'),(six,'6 DME - 1200 ft - 200kt'),
             (three,'Intercept Glide - 8 AOA'),(turn,'300kt - 1200 ft'),
             (outbound,f'{(heading+180)%360:03.0f} Outbound')]
     plan_vertices=[fix(dme,1200*FT,-ILS_LOC_FULL_SCALE_DEG+2*ILS_LOC_FULL_SCALE_DEG*i/steps) for dme in (3,10) for i in range(steps+1)]
@@ -161,7 +172,6 @@ def case3_geometry(carrier, sea_offset, glide=3.5, offset=10., final_stop_m=0.):
     for i in (0,steps):plan_edges.extend((plan_vertices[i],plan_vertices[stride+i]))
     return dict(vertices=vertices,faces=faces,edges=edges,plan_vertices=plan_vertices,
                 plan_faces=plan_faces,plan_edges=plan_edges,routes=routes,missed=missed,labels=labels,
-                glide_routes=glide_routes,glide_alpha=glide_alpha,marshal_routes=marshal_routes,
-                iaf=iaf,hold=hold,hold_radius_m=radius,hold_leg_m=leg,runway_heading_deg=heading,
+                glide_routes=glide_routes,glide_alpha=glide_alpha,marshal_holds=marshal_holds,runway_heading_deg=heading,
                 missed_turn=turn,missed_outbound=outbound,missed_path=missed_path,
                 missed_climb_slope=climb_slope,missed_level_distance_m=level_distance,missed_climb_fpm=climb_fpm)

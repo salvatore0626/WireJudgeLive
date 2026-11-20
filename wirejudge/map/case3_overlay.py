@@ -98,49 +98,69 @@ class Case3Overlay:
         self.opacity = opacity
         if self.geometry is not None:
             self.glide.setData(color=vertex_colors(palette['glide'], .85 * opacity, self.geometry['glide_alpha']))
-        self.marshal.setData(color=rgba(palette['marshal'], .75 * opacity))
+        self.apply_marshal_colors()
         self.missed.setData(color=rgba(palette['missed'], .85 * opacity))
-        self.waypoint.setData(color=rgba(palette['marshal'], opacity))
         self.labels.set_opacity(opacity)
+
+    def apply_marshal_colors(self):
+        holds = self.geometry['marshal_holds'] if self.geometry is not None else ()
+        if not holds:
+            return
+        default = rgba(self.palette['marshal'])[:3]
+        line_colors, fix_colors = [], []
+        for _, vertices, _, flight_color in holds:
+            rgb = flight_color if flight_color is not None else default
+            line_colors.extend([(*rgb, .75 * self.opacity)] * len(vertices))
+            fix_colors.append((*rgb, self.opacity))
+        self.marshal.setData(color=np.asarray(line_colors, dtype=np.float32))
+        self.waypoint.setData(color=np.asarray(fix_colors, dtype=np.float32))
 
     def hide(self):
         self.labels.hide()
         for item in self.items:
             if item.visible():item.setVisible(False)
 
-    def update(self,carrier,sea_offset,glide,offset,is_3d,transform,reference_key,units=None,visibility=None,show_labels=True,final_stop_m=0.):
+    def update(self,carrier,sea_offset,glide,offset,is_3d,transform,reference_key,units=None,visibility=None,show_labels=True,final_stop_m=0., *, marshal_assignments=()):
         units=units or DisplayUnits()
         visibility = visibility if visibility is not None else dict.fromkeys(self.groups, True)
         key=(carrier.get('position_world_m'),carrier.get('rotation_xyzw'),[(c.get('position_world_m'),c.get('endpoint1_world_m'),
              c.get('endpoint2_world_m')) for c in carrier.get('cables') or []],
              sea_offset,glide,offset,is_3d,reference_key,units.speed_name,units.altitude_name,units.distance_name,
-             tuple(visibility[key] for key in self.groups),final_stop_m)
+             tuple(visibility[key] for key in self.groups),final_stop_m,marshal_assignments)
         if key==self.last_key and self.geometry is not None:
             self.apply_visibility(visibility, show_labels)
             return
-        geometry=case3_geometry(carrier,sea_offset,glide,offset,final_stop_m)
+        geometry=case3_geometry(carrier,sea_offset,glide,offset,final_stop_m,marshal_assignments=marshal_assignments)
         self.last_key=key;self.geometry=geometry
         if geometry is None:self.hide();return
         vertices=geometry['vertices' if is_3d else 'plan_vertices']
         faces=geometry['faces' if is_3d else 'plan_faces']
-        for item,name in ((self.edges,'edges' if is_3d else 'plan_edges'),(self.routes,'routes'),(self.marshal,'marshal_routes'),(self.missed,'missed')):
-            item.setData(pos=np.asarray([transform(p) for p in geometry[name]],dtype=np.float32))
+        for item,name in ((self.edges,'edges' if is_3d else 'plan_edges'),(self.routes,'routes'),(self.missed,'missed')):
+            item.setData(pos=np.asarray([transform(p) for p in geometry[name]],dtype=np.float32).reshape(-1, 3))
+        holds = geometry['marshal_holds']
+        self.marshal.setData(pos=np.asarray([transform(p) for _, vertices, _, _ in holds for p in vertices], dtype=np.float32))
+        self.waypoint.setData(pos=np.asarray([transform(fix) for fix, _, _, _ in holds], dtype=np.float32))
+        self.apply_marshal_colors()
         self.glide.setData(pos=np.asarray([transform(p) for p in geometry['glide_routes']], dtype=np.float32).reshape(-1, 3),
                            color=vertex_colors(self.palette['glide'], .85 * self.opacity, geometry['glide_alpha']))
         self.fill.setMeshData(vertexes=np.asarray([transform(p) for p in vertices],dtype=np.float32),
                               faces=np.asarray(faces,dtype=np.uint32))
-        categories = ('marshal','approach','approach','glide','missed','missed')
+        categories = ('approach','approach','glide','missed','missed')
         self.labels.set_labels([
-            (transform(position), units.procedure_text(text), self.palette[category], i>=4)
-            for i, ((position, text), category) in enumerate(zip(geometry['labels'], categories))
+            (transform(position), units.procedure_text(text), self.palette[category], category == 'missed')
+            for (position, text), category in zip(geometry['labels'], categories)
             if visibility[category]
+        ] + [
+            (transform(position), units.procedure_text(text),
+             QColor.fromRgbF(*flight_color) if flight_color is not None else self.palette['marshal'], False)
+            for position, _, text, flight_color in holds if visibility['marshal']
         ])
-        self.waypoint.setData(pos=np.asarray([transform(geometry['iaf'])],dtype=np.float32))
         self.apply_visibility(visibility, show_labels)
 
     def apply_visibility(self, visibility, show_labels=True):
         for category, items in self.groups.items():
+            visible = visibility[category]
             for item in items:
-                if item.visible() != visibility[category]:
-                    item.setVisible(visibility[category])
+                if item.visible() != visible:
+                    item.setVisible(visible)
         self.labels.setVisible(show_labels and any(visibility.values()))

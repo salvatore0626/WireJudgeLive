@@ -132,9 +132,10 @@ class ScopeView(QWidget):
         else:radius,opacity=3.5*2.25,1.
         if state['aircraft'].get('_radar_stale'):
             opacity *= .45
-        p.save();p.setOpacity(opacity);p.setPen(QPen(QColor.fromRgbF(*base),2 if self.kind=='slice' and state.get('pitch') is not None else 3));p.setBrush(color)
-        if self.kind=='slice' and state.get('pitch') is not None:
-            p.save();p.translate(position);p.rotate(-state['pitch'])
+        triangle = self.kind == 'slice' and state.get('nose_on')
+        p.save();p.setOpacity(opacity);p.setPen(QPen(QColor.fromRgbF(*base),2 if triangle else 3));p.setBrush(color)
+        if triangle:
+            p.save();p.translate(position);p.rotate(-(state.get('pitch') or 0.))
             p.drawPolygon(QPolygonF([QPointF(radius*4/3,0),QPointF(-radius*2/3,-radius),QPointF(-radius*2/3,radius)]))
             p.restore()
         else:
@@ -145,7 +146,7 @@ class ScopeView(QWidget):
             p.drawLine(QPointF(-radius*3,0),QPointF(-radius,0));p.drawLine(QPointF(radius,0),QPointF(radius*3,0))
             p.drawLine(QPointF(0,-radius),QPointF(0,-radius*2.6));p.restore()
         if state['id']==m.selected:
-            p.setPen(QPen(QColor(theme_color('#E1E8ED')),1));p.setBrush(Qt.BrushStyle.NoBrush);p.drawEllipse(position,(radius*4/3 if self.kind=='slice' else radius)+3,(radius*4/3 if self.kind=='slice' else radius)+3)
+            p.setPen(QPen(QColor(theme_color('#E1E8ED')),1));p.setBrush(Qt.BrushStyle.NoBrush);p.drawEllipse(position,(radius*4/3 if triangle else radius)+3,(radius*4/3 if triangle else radius)+3)
         p.setPen(QColor.fromRgbF(*base));p.drawText(QPointF(position.x()+radius+6,position.y()+13),state['label'])
         if state['warnings'] and not state.get('resting'):
             p.setPen(QColor(theme_color('#FF626A')));p.drawText(QPointF(position.x()+radius+6,position.y()+25),' / '.join(state['warnings']))

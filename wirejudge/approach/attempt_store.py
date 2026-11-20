@@ -7,6 +7,7 @@ import sqlite3
 import threading
 from uuid import uuid4
 from contextlib import closing
+from wirejudge.approach.aircraft_track import track_observation
 from wirejudge.approach.approach_detection import measurement, number
 from wirejudge.approach.approach_geometry import case1_volume, NM, point
 from wirejudge.scoring.landing_scoring import compact_sample
@@ -15,15 +16,20 @@ from wirejudge.map.carrier_wireframe import carrier_geometry
 from wirejudge.telemetry.telemetry_protocol import heading_from_quaternion
 
 
-def read_track(db, attempt, start, end, cancel=lambda:False, score_rows=None, deck=None):
+def read_track(db, attempt, start, end, cancel=lambda:False, score_rows=None, deck=None, progress=None):
+    total = db.execute('SELECT count(*) FROM samples WHERE connection_id=? '
+                       'AND received_monotonic_s BETWEEN ? AND ?',
+                       (attempt['connection_id'], start, end)).fetchone()[0] if progress else 0
     rows = db.execute('SELECT received_monotonic_s,payload_json FROM samples '
         'WHERE connection_id=? AND received_monotonic_s BETWEEN ? AND ? '
         'ORDER BY received_monotonic_s,id', (attempt['connection_id'], start, end))
     track, wires = [], []
     previous = None
-    for when, payload in rows:
+    for count, (when, payload) in enumerate(rows, 1):
         if cancel():
             raise ValueError('Track request cancelled')
+        if progress and count % 64 == 0:
+            progress(count / max(1, total))
         s = json.loads(payload)
         aircraft = next((a for a in s['aircraft'] if a['instance_id']==attempt['aircraft_id']),None)
         ship = next((c for c in s['carriers'] if c['instance_id']==attempt['carrier_id']),None)
@@ -71,7 +77,7 @@ def read_track(db, attempt, start, end, cancel=lambda:False, score_rows=None, de
     return track, wires
 
 
-def read_editor(db, attempt, start=None, end=None, cursor=None, cancel=lambda:False):
+def read_editor(db, attempt, start=None, end=None, cursor=None, cancel=lambda:False, progress=None):
     row = db.execute('SELECT min(received_monotonic_s),max(received_monotonic_s) '
         'FROM samples WHERE connection_id=?',(attempt['connection_id'],)).fetchone()
     if row[0] is None:
@@ -83,7 +89,7 @@ def read_editor(db, attempt, start=None, end=None, cursor=None, cancel=lambda:Fa
     end = (attempt.get('end_s') or attempt['last_s']) if end is None else end
     end = min(end,high)
     deck = []
-    track,wires = read_track(db,attempt,max(low,start-30),min(high,end+30),cancel,deck=deck)
+    track,wires = read_track(db,attempt,max(low,start-30),min(high,end+30),cancel,deck=deck,progress=progress)
     return {'bounds':[low,high], 'track':track, 'wires':wires, 'deck':deck, 'start':start, 'end':end}
 
 
@@ -164,28 +170,39 @@ def save_boundaries(db, attempt, start, end, cursor=None, case=None, outcome=Non
         raise
 
 
-def read_aircraft_lives(db, index, stop):
+def read_aircraft_lives(db, index, stop, progress=None):
     """Index contiguous aircraft appearances without retaining snapshot data."""
     last_id, lives, active = index
+    total = db.execute('SELECT count(*) FROM samples WHERE id > ?', (last_id,)).fetchone()[0] if progress else 0
     rows = db.execute('SELECT id, received_monotonic_s, connection_id, payload_json FROM samples '
                       'WHERE id > ? ORDER BY id', (last_id,))
-    for last_id, stamp, connection, raw in rows:
+    for count, (row_id, stamp, connection, raw) in enumerate(rows, 1):
         if stop():
             break
-        present = {}
-        for aircraft in json.loads(raw).get('aircraft', []):
+        if progress and count % 64 == 0:
+            progress(count / max(1, total))
+        sample = json.loads(raw)
+        translation = (sample.get('derived') or {}).get('world_translation_m') or (0., 0., 0.)
+        if active and next(iter(active))[0] != connection:
+            active.clear()
+        for aircraft in sample.get('aircraft', []):
             aircraft_id = aircraft['instance_id']
             identity = aircraft.get('identity') or {}
             pilot, airframe = pilot_identity(identity, aircraft_id)
-            key = (connection, aircraft_id, pilot, airframe)
-            life = active.get(key)
-            if life is None or stamp - life['end_s'] > 2:
+            key = (connection, aircraft_id)
+            life, previous = active.get(key, (None, None))
+            track, restarted = track_observation(
+                previous, airframe, aircraft.get('kinematics') or {}, translation, stamp)
+            if life is None or restarted:
                 life = dict(connection_id=connection, aircraft_id=aircraft_id, pilot=pilot,
-                            airframe=airframe, start_s=stamp, end_s=stamp)
+                            airframe=track.airframe, start_s=stamp, end_s=stamp)
                 lives.append(life)
+            if life['pilot'] == str(aircraft_id):
+                life['pilot'] = pilot
+            life['airframe'] = track.airframe
             life['end_s'] = stamp
-            present[key] = life
-        active = present
+            active[key] = (life, track)
+        last_id = row_id
     return last_id, lives, active
 
 
@@ -253,10 +270,10 @@ def delete_attempt(db, attempt):
 
 
 class AttemptWorker(threading.Thread):
-    def __init__(self):
+    def __init__(self, results=None):
         super().__init__(daemon=True)
         self.tasks = queue.Queue()
-        self.results = queue.SimpleQueue()
+        self.results = queue.SimpleQueue() if results is None else results
         self.stopping = threading.Event()
         self.read_token = 0
 
@@ -278,6 +295,8 @@ class AttemptWorker(threading.Thread):
             kind,path,attempt,token,values = task
             if kind=='read' and (self.stopping.is_set() or token!=self.read_token):continue
             result = {'kind':kind,'path':path,'id':attempt['id'],'token':token,'error':None}
+            def report_progress(fraction):
+                self.results.put(dict(result, kind='progress', operation=kind, fraction=fraction))
             try:
                 with closing(sqlite3.connect(Path(path).resolve().as_uri()+'?mode=rw',uri=True,timeout=5)) as db:
                     if kind == 'save':
@@ -286,7 +305,7 @@ class AttemptWorker(threading.Thread):
                     elif kind == 'lives':
                         if path != life_path:
                             life_path, life_index = path, (0, [], {})
-                        life_index = read_aircraft_lives(db, life_index, self.stopping.is_set)
+                        life_index = read_aircraft_lives(db, life_index, self.stopping.is_set, report_progress)
                         result['lives'] = [dict(life) for life in life_index[1]]
                     elif kind == 'candidates':
                         result['candidates'] = manual_candidates(db, **values)
@@ -297,7 +316,8 @@ class AttemptWorker(threading.Thread):
                         delete_attempt(db, attempt)
                     else:
                         result.update(read_editor(db,attempt,**values,
-                            cancel=lambda:self.stopping.is_set() or token!=self.read_token))
+                            cancel=lambda:self.stopping.is_set() or token!=self.read_token,
+                            progress=report_progress))
             except Exception as exc:
                 result['error'] = str(exc)
             self.results.put(result)
