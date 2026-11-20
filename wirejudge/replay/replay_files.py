@@ -171,7 +171,7 @@ def replay_attempt_rows(db, has_edits):
             continue
         if effective.get('follow_live'):
             effective = dict(effective, **{field: detected.get(field) for field in
-                             ('last_s', 'end_s', 'outcome', 'wire', 'wire_catch_s')})
+                             ('last_s', 'end_s', 'outcome', 'wire', 'wire_catch_s', 'base_mass_kg', 'mass_kg')})
         if effective['end_s'] is None:
             effective = dict(effective, end_s=effective['last_s'], outcome='Interrupted')
         yield key, detected, effective

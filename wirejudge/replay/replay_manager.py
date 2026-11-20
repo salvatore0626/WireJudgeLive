@@ -12,10 +12,11 @@ from PySide6.QtWidgets import (QHBoxLayout,QVBoxLayout,QLabel,QPushButton,QFileD
                                QDialog,QDialogButtonBox,QInputDialog,QTreeWidget,QTreeWidgetItem,QMessageBox)
 from wirejudge.ui.background_files import FileWorker
 from wirejudge.replay.replay_loading import ReplayLoading
+from wirejudge.replay.recording_toggle import ReturnToLiveButton
 from wirejudge.replay.replay_files import (list_replays, rename_replay, replay_info, save_replay, delete_replay,
                           trim_preview, trim_replay, cleanup_candidates, delete_cleanup_candidates)
 from wirejudge.replay.replay_trim import ReplayTrimDialog
-from wirejudge.ui.theme import color
+from wirejudge.ui.theme import blend, color
 
 
 def local_stamp(value):
@@ -50,8 +51,9 @@ class ReplayManager:
         self.saving = False
         self.cleaning = False
         self.cleanup_paths = set()
-        self.return_live = QPushButton('Return to Live')
+        self.return_live = ReturnToLiveButton()
         self.return_live.clicked.connect(owner.go_live)
+        self.return_live.setEnabled(False)
         self.return_live.hide()
     def remember(self,info):
         self.index[info['recording_id']]=info['path']
@@ -195,6 +197,12 @@ class ReplayManager:
                 painter.drawEllipse(1, 1, 8, 8)
                 painter.end()
                 item.setIcon(0, QIcon(dot))
+            if row['landings'] == 0:
+                accent = color('score_orange')
+                item.setBackground(0, QColor(blend(color('panel'), accent, .16)))
+                item.setText(0, item.text(0) + '  ·  No landings')
+                if not active:
+                    item.setForeground(0, QColor(accent))
             item.setData(0, Qt.ItemDataRole.UserRole, row)
             item.setToolTip(0, row['path'])
             self.replay_list.addTopLevelItem(item)
@@ -549,18 +557,21 @@ class ReplayManager:
                 self.owner.scoring_tool.request_key=None
                 self.owner.scoring_tool.epoch+=1
                 if self.jump_attempt:
-                    self.owner.current_aircraft=self.jump_attempt['aircraft_id'];self.owner.current_carrier=self.jump_attempt['carrier_id']
+                    self.owner.current_aircraft=self.jump_attempt['aircraft_id'];self.owner.preferred_carrier=self.jump_attempt['carrier_id']
                     self.owner.tabs.setCurrentIndex(0)
                 self.owner.notify(f"Loaded {info['name']} · {len(attempts)} attempts"+(' · linked attempt has incomplete replay coverage' if partial else ''))
         if self.owner.capture.writer and not self.scanning and time.monotonic() - self.last_scan >= 2:
             self.refresh_browser()
         self.update_banner()
     def update_banner(self):
-        self.owner.replays_button.set_recording(bool(self.active_path()))
         info = self.current_info()
         watching = self.owner.external_replay or self.owner.playback.state != 'live'
+        receiving = bool(self.owner.last_receiving)
+        self.return_live.setEnabled(receiving)
+        self.return_live.set_pulsing(self.owner.external_replay and receiving)
         self.return_live.setVisible(watching)
-        tooltip = f"Return to live from {info['name']}" if watching and info else 'Return to live telemetry'
+        tooltip = ('Waiting for live telemetry' if not receiving else
+                   f"Return to live from {info['name']}" if watching and info else 'Return to live telemetry')
         if self.return_live.toolTip() != tooltip:
             self.return_live.setToolTip(tooltip)
     def linked_replay_path(self, record):

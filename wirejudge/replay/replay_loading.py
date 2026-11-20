@@ -40,7 +40,7 @@ class ReplayLoading(QWidget):
 
     def sync_visibility(self, *_):
         tabs = self.parentWidget().tabs
-        visible = self.timer.isActive() and tabs.tabText(tabs.currentIndex()) not in ('Leaderboards', 'Settings')
+        visible = self.timer.isActive() and tabs.tabText(tabs.currentIndex()) != 'Settings'
         self.setVisible(visible)
         if visible:
             self.raise_()
