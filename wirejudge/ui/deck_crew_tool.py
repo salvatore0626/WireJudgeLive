@@ -18,11 +18,30 @@ class CrewLog(QTextBrowser):
     def __init__(self, kind, manager):
         super().__init__()
         self.setOpenLinks(False)
-        self.anchorClicked.connect(manager.focus_member)
+        self.focus_member = manager.focus_member
+        self.pressed_crew_link = ''
         self.document().setMaximumBlockCount(500)
         self.messages = deque(maxlen=500)
         self.avatars = {}
         manager.view = self
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            anchor = self.anchorAt(event.position().toPoint())
+            if anchor.startswith('crew:'):
+                self.pressed_crew_link = anchor
+                event.accept()
+                return
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and self.pressed_crew_link:
+            pressed, self.pressed_crew_link = self.pressed_crew_link, ''
+            if self.anchorAt(event.position().toPoint()) == pressed:
+                self.focus_member(QUrl(pressed))
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
     def avatar(self, rgba):
         crew = QColor.fromRgbF(*rgba)
@@ -127,8 +146,14 @@ class DeckCrewTool(QObject):
 
     def focus_member(self, url):
         if url.scheme() == 'crew':
+            crew_id = url.path()
+            model = self.owner.map.deck_crew.model
+            if model is None or not any(person['id'] == crew_id for person in model.people):
+                return
             self.owner.tabs.setCurrentIndex(0)
-            self.owner.map.focus_crew(url.path())
+            if not self.owner.map.is_3d:
+                self.owner.dimension.setChecked(True)
+            self.owner.map.focus_crew(crew_id)
 
     def lso_message(self, text):
         self.view.append_message(dict(name='LSO', text=text, color=(1., 1., 1., 1.)))

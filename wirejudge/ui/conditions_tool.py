@@ -5,7 +5,7 @@ from wirejudge.paths import ASSETS_DIR
 
 from PySide6.QtCore import QEvent, QObject, QPointF, QRectF, Qt, QTimer, QUrl
 from PySide6.QtGui import QColor, QGuiApplication, QPainter, QPen, QPolygonF
-from PySide6.QtWidgets import QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QPushButton, QVBoxLayout, QWidget
 
 from wirejudge.approach.approach_scopes import ScopePane
 from wirejudge.approach.approach_geometry import NM, point
@@ -82,6 +82,10 @@ class ConditionsView(QWidget):
     def __init__(self, kind, manager):
         super().__init__()
         self.manager = manager
+        self.north_button = QPushButton('North Up', self)
+        self.north_button.setCheckable(True)
+        self.north_button.setStyleSheet('padding: 2px 7px;')
+        self.north_button.setToolTip('Keep the conditions compass fixed north up.')
         self.runway_button = QPushButton('Runway', self)
         self.runway_button.setCheckable(True)
         self.runway_button.setStyleSheet('padding: 2px 7px;')
@@ -92,7 +96,11 @@ class ConditionsView(QWidget):
         self.relative_button.setToolTip('Show current and historical wind over the moving deck.')
         controls = QVBoxLayout(self)
         controls.setContentsMargins(7, 22, 7, 4)
-        controls.addWidget(self.runway_button, 0, Qt.AlignmentFlag.AlignRight)
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+        buttons.addWidget(self.north_button)
+        buttons.addWidget(self.runway_button)
+        controls.addLayout(buttons)
         controls.addStretch()
         controls.addWidget(self.relative_button, 0, Qt.AlignmentFlag.AlignRight)
 
@@ -109,6 +117,7 @@ class ConditionsView(QWidget):
         reciprocal = None if m.brc is None else m.brc + 180
         p.drawText(10, 37, f'BRC Recip {heading_text(reciprocal)}')
         center = QPointF(width / 2, height / 2 - 19)
+        camera_bearing = 0. if self.north_button.isChecked() else m.owner.map.camera_bearing()
         radius = max(14., min(width / 2 - 26, height / 2 - 79))
         outline, accent = QColor(color('muted')), QColor(color('accent'))
 
@@ -117,7 +126,7 @@ class ConditionsView(QWidget):
         scale = WIND_SCALE_STEP * max(1, math.ceil(peak / WIND_SCALE_STEP))
 
         def at(bearing, fraction):
-            angle = math.radians(bearing)
+            angle = math.radians(bearing - camera_bearing)
             length = radius * fraction
             return center + QPointF(math.sin(angle) * length, -math.cos(angle) * length)
 
@@ -157,7 +166,7 @@ class ConditionsView(QWidget):
                        Qt.AlignmentFlag.AlignCenter, title)
         p.restore()
         if self.runway_button.isChecked() and m.final is not None:
-            self.draw_runway(p, center, radius, m.final)
+            self.draw_runway(p, center, radius, m.final - camera_bearing)
         if current:
             speed, bearing = current
             if bearing is not None:
@@ -166,7 +175,7 @@ class ConditionsView(QWidget):
                 size = min(8., radius * speed / scale)
                 head = []
                 for side in (-150, 150):
-                    a = math.radians(downwind + side)
+                    a = math.radians(downwind + side - camera_bearing)
                     head.append(tip + QPointF(math.sin(a) * size, -math.cos(a) * size))
                 arrowhead = QPolygonF([head[0], tip, head[1]])
                 for ink, weight in ((QColor(color('panel')), 4.5), (accent, 2)):
@@ -181,13 +190,13 @@ class ConditionsView(QWidget):
                 text = f'Wind calm · {m.units.speed(speed):.0f} {m.units.speed_symbol}'
         else:
             text = 'Relative wind unavailable' if relative else 'Wind unavailable'
-        self.draw_ring_labels(p, at, scale)
+        self.draw_ring_labels(p, lambda _, fraction: at(camera_bearing, fraction), scale)
         if m.brc is not None:
             p.setPen(QPen(QColor(color('text')), 2))
             p.drawPolyline(QPolygonF([at(m.brc - 5, .91), at(m.brc, 1.04),
                                        at(m.brc + 5, .91)]))
             marker = at(m.brc, .76)
-            if abs((m.brc + 180) % 360 - 180) < 25:
+            if abs((m.brc - camera_bearing + 180) % 360 - 180) < 25:
                 marker += QPointF(-30 if marker.x() < center.x() else 30, 0)
             else:
                 marker += at(m.brc + 90, 17 / radius) - center
@@ -268,6 +277,10 @@ class ConditionsTool(QObject):
         self.timer.setInterval(450)
         self.timer.timeout.connect(self.blink)
         self.pane = ScopePane('Conditions', 'conditions', self, view_factory=ConditionsView)
+        north_button = self.pane.view.north_button
+        north_button.setChecked(owner.settings.store.value('conditions/north_up', False, type=bool))
+        north_button.toggled.connect(self.set_north_up)
+        owner.map.camera_changed.connect(self.pane.view.update)
         runway_button = self.pane.view.runway_button
         runway_button.setChecked(owner.settings.store.value('conditions/show_runway', False, type=bool))
         runway_button.toggled.connect(self.set_runway_visible)
@@ -342,6 +355,10 @@ class ConditionsTool(QObject):
 
     def set_runway_visible(self, visible):
         self.owner.settings.store.setValue('conditions/show_runway', visible)
+        self.pane.view.update()
+
+    def set_north_up(self, enabled):
+        self.owner.settings.store.setValue('conditions/north_up', enabled)
         self.pane.view.update()
 
     def set_frame(self, sample, carrier_id, units, key, history=()):

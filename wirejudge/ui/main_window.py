@@ -20,10 +20,9 @@ from wirejudge.approach.approach_view import ApproachView
 from wirejudge.approach.attempt_editor import AttemptEditor
 from wirejudge.aircraft.aircraft_list import AircraftList, NAMES
 from wirejudge.replay.replay_manager import ReplayManager
-from wirejudge.replay.recording_toggle import ReplayButton
 from wirejudge.scoring.leaderboards import Leaderboards
 from wirejudge.replay.event_timeline import EventTimeline,recovery_events
-from wirejudge.approach.approach_geometry import NM
+from wirejudge.approach.approach_geometry import NM, case1_volume, point
 from wirejudge.telemetry.larp_radar import RadarContacts, SEARCH_PERIOD
 from wirejudge.map.map_trails import TRAIL_SECONDS
 from wirejudge.ui.control_icons import control_icon
@@ -43,6 +42,7 @@ from wirejudge.map.procedure_colors import defaults as procedure_defaults, is_pr
 from wirejudge.ui.theme_editor import ThemeEditor
 from wirejudge.ui.settings_layout import SettingsColumns
 from wirejudge.ui import theme
+from wirejudge.ui.telemetry_connection import TelemetryStatusButton, TelemetryConnection
 
 
 def label(text, name=None):
@@ -109,6 +109,8 @@ class MainWindow(QMainWindow):
         self.units = DisplayUnits(self.settings.get('speed_unit'), self.settings.get('altitude_unit'),self.settings.get('distance_unit'))
         self.capture = CaptureService(self.settings.get('buffer_s'))
         self.capture.auto_record_folder=self.settings.get('recording_folder')
+        self.capture.configure_telemetry(self.settings.get('telemetry_auto_start'),
+                                         self.settings.get('telemetry_default_hz'))
         self.playback = PlaybackClock()
         self.playback_reader = DVRReader()
         self.playback_reader.start()
@@ -133,6 +135,9 @@ class MainWindow(QMainWindow):
         self.last_render_key = None
         self.current_sample = None
         self.current_carrier = None
+        self.preferred_carrier = None
+        self.auto_carrier = None
+        self.carrier_selection_context = None
         self.current_aircraft = None
         self.last_details_update = 0.
         self.dvr_path = None
@@ -159,7 +164,7 @@ class MainWindow(QMainWindow):
         brand.addWidget(label('Live','brandLive'))
         row.addLayout(brand)
         row.addStretch()
-        self.replays_button = ReplayButton()
+        self.replays_button = QPushButton('Replays')
         self.replays_button.clicked.connect(lambda: self.replay_manager.show_browser())
         row.addWidget(self.replays_button)
         self.timeline_toggle=button('Timeline',checkable=True)
@@ -187,7 +192,19 @@ class MainWindow(QMainWindow):
         self.statusBar().setStyleSheet('QStatusBar {background:#26282B;color:#FFFFFF;border-top:1px solid #383B40;} QStatusBar::item {border:0;} QSizeGrip {background:#26282B;} QLabel {background:transparent;color:#FFFFFF;}')
         self.telemetry_status = button('Telemetry 0.0 Hz',lambda:self.tabs.setCurrentIndex(5))
         self.telemetry_status.setStyleSheet('QPushButton {color:#FF626A;border:none;background:transparent;text-align:left;padding:4px 10px;}')
-        self.statusBar().addPermanentWidget(self.telemetry_status,1)
+        telemetry_controls = QWidget()
+        telemetry_controls.setObjectName('telemetryControls')
+        telemetry_controls.setStyleSheet('QWidget#telemetryControls {background:transparent;}')
+        telemetry_row = QHBoxLayout(telemetry_controls)
+        telemetry_row.setContentsMargins(0, 0, 6, 0)
+        telemetry_row.setSpacing(4)
+        telemetry_row.addWidget(self.telemetry_status)
+        self.telemetry_toggle = TelemetryStatusButton()
+        self.telemetry_toggle.setEnabled(False)
+        self.telemetry_toggle.clicked.connect(self.toggle_telemetry)
+        telemetry_row.addWidget(self.telemetry_toggle)
+        telemetry_row.addStretch(1)
+        self.statusBar().addPermanentWidget(telemetry_controls,1)
         self.last_receiving = False
         self.notify('Starting automatic receiver • waiting for mod or replay sender')
         self.render_label = label('App UI 0 FPS · Map 0 FPS', 'muted')
@@ -210,6 +227,7 @@ class MainWindow(QMainWindow):
         self.capture_timer.start()
         self.previous_tab = 0
         self.tabs.currentChanged.connect(self.analysis_tab_changed)
+        self.telemetry_prompt = TelemetryConnection(self)
         self.receive_timer = QTimer(self)
         self.receive_timer.setInterval(1000)
         self.receive_timer.timeout.connect(self.ensure_receiver)
@@ -356,7 +374,8 @@ class MainWindow(QMainWindow):
         self.procedure_button.setToolTip('Map Settings · Carrier Lock and procedure overlays')
         self.procedure_button.setMenu(self.procedure_menu)
         self.procedure_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        for key, title in (('marshal', 'Marshal'), ('approach', 'Approach'), ('missed', 'Missed Approach'),
+        for key, title in (('marshal', 'Marshal'), ('approach', 'Approach'),
+                           ('extended_centerline', 'Extended Centerline'), ('missed', 'Missed Approach'),
                            ('glide', 'Glide / Localizer'), ('gates', 'Grading Gates')):
             action = self.procedure_menu.addAction(title)
             action.setCheckable(True)
@@ -431,7 +450,7 @@ class MainWindow(QMainWindow):
         controls=QVBoxLayout(self.map_controls);controls.setContentsMargins(5,5,5,5);controls.setSpacing(4)
         self.map_controls_toggle=button('',self.set_map_controls_expanded,checkable=True)
         self.map_controls_toggle.setIcon(control_icon('toolbox'));self.map_controls_toggle.setAccessibleName('Tools')
-        self.map_controls_toggle.setToolTip('Show tools')
+        self.map_controls_toggle.installEventFilter(self)
         self.vector_button = button('', checkable=True)
         self.vector_button.setIcon(control_icon('vector'))
         self.vector_button.setAccessibleName('Draw marshal vector')
@@ -652,6 +671,16 @@ class MainWindow(QMainWindow):
                 event.type() == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.RightButton):
             self.map.clear_marshal_vectors()
             return True
+        if (watched is getattr(self, 'map_controls_toggle', None) and
+                event.type() == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.RightButton):
+            for pane in (*self.approach_displays.panes, self.stack_tool.pane, self.scoring_tool.pane,
+                         self.roster_tool.pane, self.conditions_tool.pane, self.deck_crew_tool.pane):
+                pane.request_hide()
+                if pane.detached:
+                    pane.dock()
+            self.mission_clock_button.setChecked(False)
+            self.set_map_controls_expanded(False)
+            return True
         if event.type() == QEvent.Type.MouseButtonPress and isinstance(watched, QWidget):
             if watched is not self.map_controls and not self.map_controls.isAncestorOf(watched):
                 self.set_map_controls_expanded(False)
@@ -665,7 +694,8 @@ class MainWindow(QMainWindow):
         self.map_controls_toggle.setChecked(expanded)
         self.map_control_details.setVisible(expanded)
         self.map_controls.layout().invalidate();self.map_controls.layout().activate();self.map_controls.adjustSize()
-        self.map_controls_toggle.setToolTip('Hide tools' if expanded else 'Show tools')
+        action = 'Hide tools menu' if expanded else 'Show tools menu'
+        self.map_controls_toggle.setToolTip(f'{action} · Right-click to close all tools')
         self.map_controls.raise_()
         if hasattr(self, 'mission_clock'):
             self.position_mission_clock()
@@ -824,6 +854,16 @@ class MainWindow(QMainWindow):
         port.setValue(self.settings.get('port'))
         self.fields['port'] = port
         form.addRow('TCP port', port)
+        auto_start = QCheckBox('Auto start telemetry')
+        auto_start.setChecked(self.settings.get('telemetry_auto_start'))
+        self.fields['telemetry_auto_start'] = auto_start
+        form.addRow(auto_start)
+        default_hz = QSpinBox()
+        default_hz.setRange(1, 50)
+        default_hz.setSuffix(' Hz')
+        default_hz.setValue(self.settings.get('telemetry_default_hz'))
+        self.fields['telemetry_default_hz'] = default_hz
+        form.addRow('Default refresh rate', default_hz)
         cards.append(connection)
         folder = QLineEdit(self.settings.get('recording_folder'))
         self.fields['recording_folder'] = folder
@@ -962,6 +1002,14 @@ class MainWindow(QMainWindow):
         case_form.addRow('Procedure line thickness', stroke_row)
         procedure_width.valueChanged.connect(self.update_procedure_stroke)
         self.update_procedure_stroke()
+        centerline = QSpinBox()
+        centerline.setRange(0, 100)
+        centerline.setSuffix(' NM')
+        centerline.setValue(self.settings.get('extended_centerline_nm'))
+        centerline.setToolTip('Extend the localizer aft from the carrier. Set to 0 to hide it.')
+        self.fields['extended_centerline_nm'] = centerline
+        centerline.valueChanged.connect(self.apply_case_settings)
+        case_form.addRow('Extended Centerline', centerline)
 
         for key, title, low, high in [('case1_glide_deg', 'Glideslope angle', .1, 15.),
                                      ('case1_runway_offset_deg', 'Runway offset to port', -45., 45.)]:
@@ -1013,13 +1061,13 @@ class MainWindow(QMainWindow):
         cards.append(carrier_details_box)
         self.apply_case_settings()
         categories = {
-            scoring_box: (), appearance: ('theme',), connection: ('host', 'port'),
+            scoring_box: (), appearance: ('theme',), connection: ('host', 'port', 'telemetry_auto_start', 'telemetry_default_hz'),
             unit_box: ('speed_unit', 'altitude_unit', 'distance_unit'),
             gauge_box: tuple(f'{gauge}_display' for gauge in GAUGE_DISPLAY_DEFAULTS),
             history: ('recording_folder', 'buffer_s'),
             display: ('icon_scale_2d', 'icon_scale_3d', 'velocity_vector_seconds'),
             guides: ('grid', 'guide_style', 'guide_spacing_nm'),
-            case_box: ('case1_glide_deg', 'case1_runway_offset_deg', 'procedure_line_width'),
+            case_box: ('case1_glide_deg', 'case1_runway_offset_deg', 'procedure_line_width', 'extended_centerline_nm'),
             carrier_details_box: ('carrier_flag', 'carrier_cvn', 'deck_crew_enabled', 'deck_crew_count'),
         }
         self.settings_category_resets = {}
@@ -1137,6 +1185,9 @@ class MainWindow(QMainWindow):
         self.case_button.setText('')
         self.refresh_control_icons()
         if hasattr(self, 'fields'):
+            self.map.extended_centerline_nm = (self.fields['extended_centerline_nm'].value()
+                                                if 'extended_centerline_nm' in self.fields
+                                                else self.settings.get('extended_centerline_nm'))
             self.map.case1_glide_deg = self.fields['case1_glide_deg'].value() if 'case1_glide_deg' in self.fields else self.settings.get('case1_glide_deg')
             self.map.case1_runway_offset_deg = self.fields['case1_runway_offset_deg'].value() if 'case1_runway_offset_deg' in self.fields else self.settings.get('case1_runway_offset_deg')
         self.map.apply_camera()
@@ -1364,6 +1415,7 @@ class MainWindow(QMainWindow):
         self.settings.save(values)
         self.capture.set_buffer(values['buffer_s'])
         self.capture.auto_record_folder=values['recording_folder']
+        self.capture.configure_telemetry(values['telemetry_auto_start'], values['telemetry_default_hz'])
         self.active_recordings_path.setText(values['recording_folder'])
         self.saved.setText('Settings saved')
         self.update_settings_buttons()
@@ -1401,6 +1453,26 @@ class MainWindow(QMainWindow):
         col.addLayout(row)
         return panel
 
+    def toggle_telemetry(self):
+        capture = self.capture
+        hz = capture.telemetry_hz if capture.telemetry_enabled else capture.telemetry_default_hz
+        if capture.request_telemetry(not capture.telemetry_enabled, hz):
+            self.telemetry_prompt.dismiss()
+
+    def update_telemetry_controls(self, stats):
+        supported = stats['mod_connected'] and stats['control_supported']
+        pending = stats['control_pending']
+        enabled = supported and stats['telemetry_enabled']
+        self.telemetry_toggle.setText('Stop' if enabled else 'Start')
+        self.telemetry_toggle.setEnabled(supported and not pending)
+        self.telemetry_toggle.set_running(enabled)
+        self.telemetry_toggle.set_pulsing(supported and not enabled and not pending)
+        self.telemetry_toggle.setToolTip(
+            'Stop or start telemetry collection in the mod' if supported else
+            'Waiting for a mod with telemetry controls')
+        if not stats['mod_connected'] or enabled:
+            self.telemetry_prompt.dismiss()
+
     @staticmethod
     def elapsed_text(seconds):
         seconds=max(0.,seconds)
@@ -1420,7 +1492,7 @@ class MainWindow(QMainWindow):
         if not self.playback.start<=attempt['start_s']<=self.playback.end:
             self.notify('This attempt is outside the current DVR recording.');return
         self.pending_attempt_jump=None
-        self.current_aircraft=attempt['aircraft_id'];self.current_carrier=attempt['carrier_id']
+        self.current_aircraft=attempt['aircraft_id'];self.preferred_carrier=attempt['carrier_id']
         self.map.set_selection(self.current_aircraft)
         self.seek_playback(attempt['start_s'])
         self.play_after_seek=True
@@ -1588,7 +1660,15 @@ class MainWindow(QMainWindow):
         self.timeline.setVisible(self.tabs.currentIndex() == 0 and self.timeline_toggle.isChecked())
         for control in (self.scrubber,self.play_button,self.back_button,self.forward_button):
             control.setEnabled(ready)
-        self.live_button.setEnabled(ready and not self.external_replay)
+        can_go_live = bool(self.last_receiving) and not self.external_replay
+        live_now = can_go_live and self.playback.state == 'live'
+        self.live_button.setEnabled(can_go_live)
+        self.live_button.setChecked(live_now)
+        live_alert = can_go_live and (live_now or time.monotonic() % 1.0 < .5)
+        live_style = (f"QPushButton {{color:{theme.color('warning')}; border-color:{theme.color('warning')};}}"
+                      if live_alert else '')
+        if self.live_button.styleSheet() != live_style:
+            self.live_button.setStyleSheet(live_style)
         icon_key = (theme.CURRENT_THEME, self.case_selector.currentText(),
                     self.lock.isChecked(), self.map.playback_paused)
         if icon_key != getattr(self, '_timeline_icon_key', None):
@@ -1612,7 +1692,6 @@ class MainWindow(QMainWindow):
             self.playback_position.setText(self.elapsed_text(position).split('.')[0])
             self.playback_position.setToolTip(f'{self.elapsed_text(position)} / {self.elapsed_text(duration)}')
             self.scrubber.set_times('00:00:00',self.elapsed_text(duration).split('.')[0],self.elapsed_text(position).split('.')[0])
-            self.live_button.setChecked(self.playback.state=='live')
             if not self.scrubber.isSliderDown():
                 value=round(position/duration*1_000_000) if duration>0 else 1_000_000
                 self.scrubber.blockSignals(True)
@@ -1651,8 +1730,58 @@ class MainWindow(QMainWindow):
         return str(value)
 
     def carrier_changed(self, index):
-        self.current_carrier = self.carrier.itemData(index)
+        self.preferred_carrier = self.carrier.itemData(index)
         self.refresh_capture(force=True)
+
+    def update_carrier_selection(self, sample):
+        context = self.external_replay, sample['capture']['connection_id']
+        if context != self.carrier_selection_context:
+            self.carrier_selection_context = context
+            self.auto_carrier = None
+        candidates = sorted((c for c in sample['carriers']
+                             if c.get('cables') and point(c.get('position_world_m'))),
+                            key=lambda c: str(c['instance_id']))
+        ids = [c['instance_id'] for c in candidates]
+        self.current_carrier = self.preferred_carrier
+        if self.current_carrier not in ids:
+            if self.auto_carrier not in ids:
+                self.auto_carrier = None
+                positions = [a['kinematics'].get('position_world_m') for a in sample['aircraft']]
+                positions = [p for p in positions if point(p)]
+                def rank(ship):
+                    x, _, z = ship['position_world_m']
+                    distance = min(((p[0]-x)**2 + (p[2]-z)**2 for p in positions), default=0.)
+                    return (case1_volume(ship) is None, distance, -len(ship['cables']))
+                fallback = min(candidates, key=rank, default=None)
+                if fallback:
+                    self.current_carrier = fallback['instance_id']
+                    if positions:
+                        self.auto_carrier = self.current_carrier
+                else:
+                    self.current_carrier = None
+            else:
+                self.current_carrier = self.auto_carrier
+
+        old_ids = [self.carrier.itemData(i) for i in range(1, self.carrier.count())]
+        self.carrier.blockSignals(True)
+        if ids != old_ids or not self.carrier.count():
+            self.carrier.clear()
+            self.carrier.addItem('Auto')
+            for ship in candidates:
+                name = ship.get('airport_name') or ship.get('actor_name') or str(ship['instance_id'])
+                self.carrier.addItem(f"{name} ({len(ship['cables'])} wires)", ship['instance_id'])
+        if self.carrier.count():
+            auto_index = self.carrier.findData(self.current_carrier) if self.current_carrier in ids else -1
+            auto_label = (f'Auto · {self.carrier.itemText(auto_index)}'
+                          if auto_index >= 1 else 'Auto')
+            if self.carrier.itemText(0) != auto_label:
+                self.carrier.setItemText(0, auto_label)
+            self.carrier.setCurrentIndex(ids.index(self.preferred_carrier) + 1
+                                         if self.preferred_carrier in ids else 0)
+        self.carrier.blockSignals(False)
+        self.carrier.setEnabled(bool(ids))
+        self.lock.setEnabled(bool(ids))
+        self.home_button.setEnabled(bool(ids))
 
     def aircraft_map_clicked(self,instance):
         if instance is None:
@@ -1779,7 +1908,7 @@ class MainWindow(QMainWindow):
         else:
             self.carrier_detail.setText('No current carrier telemetry.')
 
-    def update_attention(self, timestamp, connected):
+    def update_attention(self, timestamp):
         scope = next(pane.view for pane in self.approach_displays.panes if pane.kind == 'scope')
         states = self.approach_displays.states if timestamp is not None else {}
         contacts = []
@@ -1805,15 +1934,9 @@ class MainWindow(QMainWindow):
             toolbox_style = f'QPushButton {{background:{background.name()};}}'
         if toolbox.styleSheet() != toolbox_style:
             toolbox.setStyleSheet(toolbox_style)
-        return_live = self.replay_manager.return_live
-        live_alert = self.external_replay and connected
-        red_style = (f"QPushButton {{background:{theme.PALETTE['warning']}; color:{theme.PALETTE['map']};}}"
-                     if live_alert else '')
-        if return_live.styleSheet() != red_style:
-            return_live.setStyleSheet(red_style)
         fade = .52 + .48 * phase
         for control, active in ((self.landing_button, landing_contact),
-                                (self.glide_button, glide_contact), (return_live, live_alert)):
+                                (self.glide_button, glide_contact)):
             effect = control.graphicsEffect()
             active = active and control.isVisible()
             if effect is None and active:
@@ -1822,8 +1945,7 @@ class MainWindow(QMainWindow):
             if effect is not None:
                 effect.setEnabled(active)
                 if active:
-                    effect.setOpacity(.76 + .24 * math.cos(now * math.tau / 2.4)
-                                      if control is return_live else fade)
+                    effect.setOpacity(fade)
 
     def refresh_capture(self, force=False):
         while True:
@@ -1837,7 +1959,10 @@ class MainWindow(QMainWindow):
                 self.notify(f"Listening on {data['host']}:{data['port']} • waiting for mod or replay sender")
 
             elif kind == 'connected':
-                self.notify('Receiving telemetry from ' + data['peer'])
+                self.notify('Telemetry connection from ' + data['peer'])
+            elif kind == 'telemetry_ready':
+                if not data['auto_start']:
+                    self.telemetry_prompt.present(self.capture.telemetry_default_hz)
             elif kind == 'disconnected':
                 self.notify('Waiting for telemetry · receiver remains enabled')
             elif kind == 'capture_error':
@@ -1870,6 +1995,7 @@ class MainWindow(QMainWindow):
                                                  f"Saved {data['samples']} samples: {data['path']}")
         live_revision, live_sample, stats = self.capture.snapshot()
         self.update_telemetry_status(stats)
+        self.update_telemetry_controls(stats)
         self.replay_manager.poll()
         self.leaderboards.poll()
         self.scoring_tool.refresh(force=force)
@@ -1881,6 +2007,8 @@ class MainWindow(QMainWindow):
         reviewing=bool(self.dvr_path) and (self.external_replay or self.playback.state!='live')
         raw_sample = self.review_sample if reviewing else live_sample
         self.raw_sample = raw_sample
+        if raw_sample is not None:
+            self.update_carrier_selection(raw_sample)
         map_sample = self.radar_frame(raw_sample, reviewing) if self.larp_enabled else raw_sample
         sample = map_sample if self.radar_tools else raw_sample
         age = stats['age_s']
@@ -1922,13 +2050,15 @@ class MainWindow(QMainWindow):
         self.current_sample=sample
         self.update_mission_clock(sample)
         self.stack_tool.set_frame(sample,self.map.approach_case,self.units)
+        marshal_assignments = self.stack_tool.marshal_assignments() if self.map.approach_case == 'Case 3' else ()
+        revision = (*revision, marshal_assignments)
         self.update_instruments(sample,force)
         if sample is None:
             self.conditions_tool.set_frame(None, None, self.units, None)
             self.roster_tool.set_frame(None, None, self.units)
             self.approach_displays.set_frame(None,self.current_carrier,self.map.approach_case,self.map.case1_glide_deg,self.map.case1_runway_offset_deg,self.units,self.current_aircraft)
             self.lso_hints.set_frame(None,{},self.map.approach_case,None)
-            self.update_attention(None, stats['status'] == 'Connected')
+            self.update_attention(None)
             if revision != self.last_revision:
                 self.aircraft_detail.setText('Select an aircraft to view captured values.')
                 self.carrier_detail.setText('No current carrier telemetry.')
@@ -1950,24 +2080,6 @@ class MainWindow(QMainWindow):
             if self.current_aircraft not in present:
                 self.current_aircraft = None
                 self.map.set_selection(None)
-            recovery_carriers = [c for c in sample['carriers'] if c.get('cables')]
-            ids = [c['instance_id'] for c in recovery_carriers]
-            old_ids = [self.carrier.itemData(i) for i in range(self.carrier.count())]
-            if ids != old_ids:
-                self.carrier.blockSignals(True)
-                self.carrier.clear()
-                for c in recovery_carriers:
-                    name = c.get('airport_name') or c.get('actor_name') or str(c['instance_id'])
-                    self.carrier.addItem(name + f" ({len(c.get('cables') or [])} wires)", c['instance_id'])
-                if self.current_carrier not in ids:
-                    primary = max(recovery_carriers, key=lambda c: len(c.get('cables') or []), default=None)
-                    self.current_carrier = primary['instance_id'] if primary else None
-                if self.current_carrier in ids:
-                    self.carrier.setCurrentIndex(ids.index(self.current_carrier))
-                self.carrier.blockSignals(False)
-            self.carrier.setEnabled(bool(ids))
-            self.lock.setEnabled(bool(ids))
-            self.home_button.setEnabled(bool(ids))
             if force or (reviewing and self.playback.state=='paused') or time.monotonic()-self.last_details_update>=.25:
                 self.update_details()
         rtb_context = (self.radar_tools, self.playback_epoch if reviewing else None)
@@ -1978,7 +2090,7 @@ class MainWindow(QMainWindow):
         self.conditions_tool.set_frame(sample, self.current_carrier, self.units, rtb_context,
                                        radar_history if reviewing and self.radar_tools else (display_history or ()))
         self.approach_displays.set_frame(sample,self.current_carrier,self.map.approach_case,self.map.case1_glide_deg,self.map.case1_runway_offset_deg,self.units,self.current_aircraft)
-        self.update_attention(score_time, stats['status'] == 'Connected')
+        self.update_attention(score_time)
         fresh=reviewing or (stats.get('age_s') is not None and stats['age_s']<=2.)
         self.lso_hints.set_frame(sample,self.approach_displays.states,self.map.approach_case,self.current_aircraft,fresh,
             (self.current_carrier,self.map.case1_glide_deg,self.map.case1_runway_offset_deg,self.playback_epoch))
@@ -1987,7 +2099,7 @@ class MainWindow(QMainWindow):
             self.map.render_telemetry(map_sample, history, self.current_carrier, self.lock.isChecked(),
                 self.trails.isChecked() and not self.larp_enabled, self.verticals.isChecked(), self.vectors.isChecked(),
                 scoring_rules=self.scoring_tool.rules, rtb_context=(rtb_context, self.larp_enabled),
-                live_data=raw_sample if self.larp_lite else None)
+                live_data=raw_sample if self.larp_lite else None, marshal_assignments=marshal_assignments)
             self.update_radar_sweep()
         self.deck_crew_tool.refresh_status(reviewing)
 
@@ -2002,7 +2114,8 @@ class MainWindow(QMainWindow):
         if not self.leaderboards.worker.stopping.is_set():self.leaderboards.shutdown()
         if not self.attempt_editor.worker.stopping.is_set():
             self.attempt_editor.worker.stop()
-        if self.capture.busy() or self.playback_reader.is_alive() or self.attempt_editor.worker.is_alive() or self.scoring_tool.worker.is_alive() or self.replay_manager.worker.is_alive() or self.leaderboards.worker.is_alive():
+            self.attempt_editor.life_worker.stop()
+        if self.capture.busy() or self.playback_reader.is_alive() or self.attempt_editor.worker.is_alive() or self.attempt_editor.life_worker.is_alive() or self.scoring_tool.worker.is_alive() or self.replay_manager.worker.is_alive() or self.leaderboards.worker.is_alive():
             event.ignore()
             if not self.closing:
                 self.closing = True

@@ -126,21 +126,27 @@ class RadarContacts:
                 if not isinstance(altitude, (int, float)) or not math.isfinite(altitude):
                     altitude = position[1] + self.sea_offset if self.sea_offset is not None else 0.
                 distance, bearing = polar(search_origin, position)
-                hit = distance <= DECK_UPDATE_RANGE or (
-                    distance <= search_range(altitude) and
+                on_deck_range = distance <= DECK_UPDATE_RANGE
+                hit = (
+                    (on_deck_range or distance <= search_range(altitude)) and
                     crossed(start, end, bearing / 360 * SEARCH_PERIOD, SEARCH_PERIOD))
                 if not hit and par_bearing is not None:
                     distance, bearing = polar(par_origin, position)
                     delta = (bearing - par_bearing + 180) % 360 - 180
                     hit = distance <= PAR_RANGE and par_hit(start, end, delta)
-                if hit:
-                    self.contacts[aircraft['instance_id']] = (stamp, aircraft, correction, carrier)
+                if hit or on_deck_range:
+                    instance = aircraft['instance_id']
+                    previous = self.contacts.get(instance)
+                    # Deck proximity updates position immediately. The map attitude
+                    # stays at its last sweep (or the initial sighting).
+                    attitude = (kinematics, carrier) if hit or previous is None else previous[4]
+                    self.contacts[instance] = (stamp, aircraft, correction, carrier, attitude)
         else:
             self.coverage = None
             self.contacts.clear()
         display = []
         self.next_age = math.inf
-        for identifier, (seen, aircraft, old_correction, observed_carrier) in list(self.contacts.items()):
+        for identifier, (seen, aircraft, old_correction, observed_carrier, attitude) in list(self.contacts.items()):
             age = now - seen
             if age >= 2 * SEARCH_PERIOD:
                 del self.contacts[identifier]
@@ -154,7 +160,8 @@ class RadarContacts:
                 position = [p + before - now for p, before, now in zip(position, old_correction, correction)]
             display.append(dict(aircraft, kinematics=dict(kinematics, position_world_m=position),
                                 _radar_hit_s=seen, _radar_stale=stale,
-                                _radar_observation=(aircraft, observed_carrier)))
+                                _radar_observation=(aircraft, observed_carrier),
+                                _radar_attitude=attitude))
         self.snapshot = dict(sample, aircraft=display, _larp_radar=True,
                              _radar_display_s=now, _radar_sea_offset=self.sea_offset)
         if new_sample:

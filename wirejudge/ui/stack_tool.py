@@ -7,6 +7,7 @@ from PySide6.QtGui import QPainter,QPen,QColor,QFont
 from PySide6.QtWidgets import QWidget,QHBoxLayout,QVBoxLayout,QPushButton
 from wirejudge.aircraft.aircraft_list import flight_identity
 from wirejudge.aircraft.aircraft_labels import aircraft_label
+from wirejudge.approach.case3_geometry import MARSHAL_BASE_M
 from wirejudge.display_units import ALTITUDE_FACTORS
 from wirejudge.approach.approach_scopes import ScopePane
 from wirejudge.ui.theme import color as theme_color
@@ -151,7 +152,10 @@ class StackAxis(QWidget):
         row=next((r for rect,r in reversed(self.aircraft_hits) if rect.contains(event.position())),None)
         if row:
             assigned=m.assignments[row['group']]
-            self.setToolTip(f"{row['label']}: {m.units.altitude(row['alt']):,.0f} {m.units.altitude_symbol} ASL\nAssigned {m.units.altitude(assigned):,.0f} · deviation {m.units.altitude(row['alt']-assigned):+,.0f} {m.units.altitude_symbol}")
+            detail = (f"Assigned {m.units.altitude(assigned):,.0f} · deviation "
+                      f"{m.units.altitude(row['alt']-assigned):+,.0f} {m.units.altitude_symbol}"
+                      if assigned else 'No altitude assigned')
+            self.setToolTip(f"{row['label']}: {m.units.altitude(row['alt']):,.0f} {m.units.altitude_symbol} ASL\n{detail}")
         else:self.setToolTip('Scale numbers are thousands of feet or hundreds of meters. Flight boxes are draggable assignment handles.')
     def mouseReleaseEvent(self,event):
         if self.drag_group:
@@ -171,7 +175,12 @@ class StackView(QWidget):
         col=QVBoxLayout(self);col.setContentsMargins(2,2,2,2);col.setSpacing(2)
         row=QHBoxLayout();row.setContentsMargins(0,0,0,0);row.setSpacing(3)
         self.minus=QPushButton('−');self.plus=QPushButton('+');self.fit=QPushButton('Fit')
-        for b in (self.minus,self.plus,self.fit):b.setStyleSheet('QPushButton {padding:3px 8px;}');row.addWidget(b)
+        self.color_holds = QPushButton('Color Holds')
+        self.color_holds.setCheckable(True)
+        self.color_holds.setChecked(manager.owner.settings.store.value('stack/color_holds', False, type=bool))
+        self.color_holds.setToolTip('Color assigned Case 3 holds by flight.')
+        self.color_holds.toggled.connect(manager.set_color_holds)
+        for b in (self.minus,self.plus,self.fit,self.color_holds):b.setStyleSheet('QPushButton {padding:3px 8px;}');row.addWidget(b)
         self.minus.setToolTip('Zoom out · increase maximum altitude');self.plus.setToolTip('Zoom in · decrease maximum altitude')
         self.fit.setToolTip('Fit every airborne aircraft. Pulses when aircraft are outside the visible altitude range.')
         self.minus.clicked.connect(lambda:manager.zoom(1));self.plus.clicked.connect(lambda:manager.zoom(-1));self.fit.clicked.connect(manager.fit_aircraft)
@@ -179,7 +188,6 @@ class StackView(QWidget):
         self.setMinimumSize(184,220)
     def refresh(self):
         m=self.manager
-        for group in m.group_colors:m.assignments.setdefault(group,round(m.marshal_m/m.assignment_step())*m.assignment_step())
         increment=f'{m.units.altitude(m.scale_step()):,.0f} {m.units.altitude_symbol}'
         self.minus.setToolTip('Zoom out · increase maximum altitude by '+increment)
         self.plus.setToolTip('Zoom in · decrease maximum altitude by '+increment)
@@ -214,7 +222,7 @@ class StackTool(QObject):
         self.pane.raise_()
         if hasattr(self.owner,'map_controls'):self.owner.map_controls.raise_()
     def set_frame(self,sample,case,units):
-        self.units=units;self.marshal_m=(6000 if case=='Case 3' else 2000)*.3048
+        self.units=units;self.marshal_m=MARSHAL_BASE_M if case == 'Case 3' else 2000 * .3048
         rows=[];colors={}
         for aircraft in (sample or {}).get('aircraft',[]):
             info=(aircraft.get('kinematics') or {}).get('flight_info') or {};alt=info.get('altitudeASL')
@@ -223,7 +231,18 @@ class StackTool(QObject):
             short=aircraft_label(aircraft,['flight'],units,None,case,3.5)[0][0]
             rows.append(dict(id=aircraft['instance_id'],group=group,label=short,alt=alt,color=color));colors[group]=color
         if rows!=self.aircraft or colors!=self.group_colors or self.display_key!=(units.altitude_name,case):
+            for group in colors:
+                self.assignments.setdefault(group, 0.)
             self.aircraft,self.group_colors=rows,colors;self.display_key=(units.altitude_name,case);self.view.refresh()
+    def set_color_holds(self, enabled):
+        self.owner.settings.store.setValue('stack/color_holds', enabled)
+        self.owner.refresh_capture()
+
+    def marshal_assignments(self):
+        color_holds = self.view.color_holds.isChecked()
+        return tuple((group, self.assignments[group], self.group_colors[group][:3] if color_holds else None) for group in sorted(self.group_colors)
+                     if group != 'Ungrouped' and self.assignments[group] >= MARSHAL_BASE_M)
+
     def assignment_step(self):return 1000*.3048 if self.units.altitude_name=='Feet' else 100.
     def scale_step(self):return 1000*.3048 if self.units.altitude_name=='Feet' else 200.
     def zoom(self,direction):
@@ -242,7 +261,7 @@ class StackTool(QObject):
         self.owner.settings.store.setValue('stack/range_m',json.dumps([self.min_m,self.max_m]));self.owner.settings.store.sync()
     def deviating(self,row):
         assigned=self.assignments.get(row['group'])
-        return assigned is not None and abs(row['alt']-assigned)>(DEVIATION_FEET_M if self.units.altitude_name=='Feet' else DEVIATION_METRIC_M)+1e-6
+        return assigned is not None and assigned != 0. and abs(row['alt']-assigned)>(DEVIATION_FEET_M if self.units.altitude_name=='Feet' else DEVIATION_METRIC_M)+1e-6
     def aircraft_color(self,row):
         rgb=row['color'][:3]
         if self.deviating(row):

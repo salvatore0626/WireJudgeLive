@@ -47,6 +47,17 @@ class CaptureService:
         self.recording_ids = set()
         self.recording_bindings={}
         self.auto_record_folder=None
+        self.telemetry_auto_start = True
+        self.telemetry_default_hz = 10
+        self.mod_connected = False
+        self.control_supported = False
+        self.telemetry_enabled = False
+        self.telemetry_hz = 10
+        self.control_request_id = None
+        self.control_pending = False
+        self.control_requested_at = 0.
+        self.control_error = None
+        self.control_commands = deque()
         self.analysis_archive=None
         self.analysis_revision=0
 
@@ -65,7 +76,7 @@ class CaptureService:
                     continue
                 edited=self.approach_edits.get(a['id'],(a,None))[0]
                 if edited.get('follow_live'):
-                    edited=dict(edited,**{k:a.get(k) for k in ('last_s','end_s','outcome','wire','wire_catch_s')})
+                    edited=dict(edited,**{k:a.get(k) for k in ('last_s','end_s','outcome','wire','wire_catch_s','base_mass_kg','mass_kg')})
                 result.append(edited)
             return (revision, self.edit_revision), result
 
@@ -262,6 +273,9 @@ class CaptureService:
                 'samples': self.total_samples, 'buffer_samples': len(self.history),
                 'buffer_bytes': self.history_bytes, 'hz': hz,
                 'status': self.status, 'port': self.bound_port,
+                'mod_connected': self.mod_connected, 'control_supported': self.control_supported,
+                'telemetry_enabled': self.telemetry_enabled, 'telemetry_hz': self.telemetry_hz,
+                'control_pending': self.control_pending, 'control_error': self.control_error,
                 'age_s': now - self.latest['capture']['monotonic_s'] if self.latest else None}
 
     def history_snapshot(self):
@@ -293,7 +307,55 @@ class CaptureService:
             self.latest = None
             self.rate_times.clear()
             self.revision += 1
-            if self.auto_record_folder and self.writer is None:self.begin_dvr(self.auto_record_folder)
+
+    def configure_telemetry(self, auto_start, hz):
+        with self.lock:
+            self.telemetry_auto_start = bool(auto_start)
+            self.telemetry_default_hz = max(1, min(50, int(hz)))
+
+    def request_telemetry(self, enabled, hz=None):
+        with self.lock:
+            if not self.mod_connected or not self.control_supported:
+                return False
+            rate = self.telemetry_default_hz if hz is None else max(1, min(50, int(hz)))
+            self.control_request_id = uuid.uuid4().hex
+            self.control_pending = True
+            self.control_requested_at = time.monotonic()
+            self.control_error = None
+            self.control_commands.append({'type': 'telemetry_control', 'id': self.control_request_id,
+                                          'enabled': bool(enabled), 'hz': rate})
+            return True
+
+    def receive_control(self, message):
+        with self.lock:
+            if message['kind'] == 'telemetry_hello':
+                if message.get('control_version') != 1 or self.control_supported:
+                    return
+                self.control_supported = True
+                self.request_telemetry(self.telemetry_auto_start)
+                self.report('telemetry_ready', auto_start=self.telemetry_auto_start)
+                return
+            if message.get('id') != self.control_request_id:
+                return
+            self.control_pending = False
+            error = message.get('error')
+            if error:
+                self.control_error = str(error)
+                self.report('capture_error', message=self.control_error)
+                return
+            enabled, hz = message.get('enabled'), message.get('hz')
+            if not isinstance(enabled, bool) or not isinstance(hz, (int, float)) or not 1 <= hz <= 50:
+                raise ProtocolError('Invalid telemetry control acknowledgment.')
+            if enabled and not self.telemetry_enabled:
+                self._new_connection()
+            elif not enabled and self.telemetry_enabled:
+                events = self.approaches.stop()
+                if events and self.writer:
+                    self.writer.submit({'approach_events': events})
+                self.end_dvr()
+            self.telemetry_enabled, self.telemetry_hz = enabled, hz
+            self.set_status('Connected' if enabled else 'Telemetry paused')
+            self.report('telemetry_state', enabled=enabled, hz=hz)
 
     def ingest(self, source, trailer=''):
         now = time.monotonic()
@@ -404,6 +466,11 @@ class CaptureService:
                     except socket.timeout:
                         continue
                     self._new_connection()
+                    with self.lock:
+                        self.mod_connected = True
+                        self.control_supported = self.telemetry_enabled = self.control_pending = False
+                        self.control_request_id = self.control_error = None
+                        self.control_commands.clear()
                     self.set_status('Connected')
                     self.report('connected', peer=f'{peer[0]}:{peer[1]}')
                     decoder = Decoder()
@@ -411,6 +478,15 @@ class CaptureService:
                         with client:
                             client.settimeout(.2)
                             while not self.stop_event.is_set():
+                                with self.lock:
+                                    if self.control_pending and time.monotonic() - self.control_requested_at > 5:
+                                        self.control_pending = False
+                                        self.control_error = 'The mod did not acknowledge the telemetry command. Try again.'
+                                        self.report('capture_error', message=self.control_error)
+                                    commands = list(self.control_commands)
+                                    self.control_commands.clear()
+                                for command in commands:
+                                    client.sendall((json.dumps(command, separators=(',', ':')) + '\n').encode('utf-8'))
                                 try:
                                     chunk = client.recv(65536)
                                 except socket.timeout:
@@ -419,11 +495,16 @@ class CaptureService:
                                     decoder.finish()
                                     break
                                 for source, trailer in decoder.feed(chunk):
-                                    self.ingest(source, trailer)
+                                    if source.get('kind') in ('telemetry_hello', 'telemetry_state'):
+                                        self.receive_control(source)
+                                    elif not self.control_supported or self.telemetry_enabled:
+                                        self.ingest(source, trailer)
                     except (OSError, ProtocolError, ValueError, TypeError) as exc:
                         self.report('capture_error', message=str(exc))
                     finally:
                         with self.lock:
+                            self.mod_connected = self.control_supported = self.telemetry_enabled = self.control_pending = False
+                            self.control_commands.clear()
                             events = self.approaches.stop()
                             if events and self.writer is not None:
                                 self.writer.submit({'approach_events':events})

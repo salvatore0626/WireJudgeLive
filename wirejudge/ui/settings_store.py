@@ -12,6 +12,7 @@ GAUGE_DISPLAY_DEFAULTS = {
 }
 
 DEFAULTS = {'flight_palette_overrides':'{}', 'flight_color_overrides':'{}', 'theme': DEFAULT_THEME, 'custom_themes': '{}', 'theme_fonts': '{}', 'font': 'System Default', 'host': '127.0.0.1', 'port': 27850, 'buffer_s': 30,
+            'telemetry_auto_start': True, 'telemetry_default_hz': 10,
             'far_hz': 2, 'mid_hz': 5, 'near_hz': 10, 'region_hz': 10,
             'recording_folder': str(Path.home() / 'Documents' / 'WireJudgeLive Recordings'),
             'trails': True, 'verticals': True, 'vectors': True, 'grid': True,
@@ -19,7 +20,7 @@ DEFAULTS = {'flight_palette_overrides':'{}', 'flight_color_overrides':'{}', 'the
             'aircraft_label_fields':'["flight","name","ias","altitude","dme","aoa","rtb","warnings"]',
             'icon_scale_2d':100.0,'icon_scale_3d':100.0,
             'glide_color':'#20EF55','approach_color':'#00BC82','marshal_color':'#AD76FF','missed_color':'#FF9B32',
-            'guide_style': 'Rings', 'guide_spacing_nm': 5.0, 'procedure_line_width': 2,
+            'guide_style': 'Rings', 'guide_spacing_nm': 5.0, 'procedure_line_width': 2, 'extended_centerline_nm': 10,
             'speed_unit': 'Knots', 'altitude_unit': 'Feet', 'distance_unit':'NM',
             'approach_case': 'Case 1', 'case1_glide_deg': 3.5, 'case1_runway_offset_deg': 10.0, 'velocity_vector_seconds': 3.0,
             **{f'{gauge}_display': mode for gauge, mode in GAUGE_DISPLAY_DEFAULTS.items()}}

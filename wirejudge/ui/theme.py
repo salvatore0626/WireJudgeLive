@@ -311,8 +311,15 @@ def refresh_widgets(window, previous):
         role = old_roles.get(QColor(value).name().lower())
         return QColor(PALETTE[role]) if role else None
     window.setStyleSheet(stylesheet())
+    if hasattr(window, 'telemetry_prompt'):
+        window.telemetry_prompt.apply_theme()
+    if hasattr(window, 'telemetry_toggle'):
+        window.telemetry_toggle.apply_theme()
     if hasattr(window,'mode'):window.mode.apply_theme()
-    window.replays_button.apply_theme()
+    if hasattr(window, 'replay_manager'):
+        window.replay_manager.return_live.apply_theme()
+        if window.replay_manager.browser is not None:
+            window.replay_manager.populate_browser()
     if hasattr(window,'refresh_control_icons'):window.refresh_control_icons()
     if hasattr(window,'map_controls'):window.map_controls.adjustSize()
     floating = window.aircraft_panel.floating_window

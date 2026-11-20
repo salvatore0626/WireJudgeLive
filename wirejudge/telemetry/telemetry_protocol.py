@@ -49,6 +49,9 @@ class Decoder:
                 source = json.loads(raw)
             except (ValueError, zlib.error, UnicodeError) as exc:
                 raise ProtocolError(f'Cannot decode telemetry: {exc}') from exc
+            if isinstance(source, dict) and source.get('kind') in ('telemetry_hello', 'telemetry_state'):
+                yield source, trailer.hex()
+                continue
             if not isinstance(source, dict) or not isinstance(source.get('aircraft'), list):
                 raise ProtocolError('Telemetry snapshot must contain an aircraft array.')
             yield source, trailer.hex()
@@ -101,6 +104,10 @@ RUNWAY = ('instance_id', 'position_world_m', 'rotation_xyzw', 'ils_glide_angle_g
           'ols_position_world_m', 'ols_rotation_xyzw', 'ols_scale', 'ols_waving_off')
 
 
+def valid_mass(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value > 0
+
+
 def normalize(source):
     """Keep native values, names, nulls and seat-specific controls. No invented defaults."""
     result = {'source': pick(source, ('protocol', 'game_version', 'mission_time_s',
@@ -113,6 +120,14 @@ def normalize(source):
         k, c, s = a.get('kinematics') or {}, a.get('controls') or {}, a.get('systems') or {}
         identity = pick(a.get('identity'), IDENTITY) or {}
         kin = pick(k, KINEMATICS) or {}
+        mass = k.get('mass_kg')
+        if valid_mass(mass):
+            # Exporter 0.3.0 used Rigidbody tonnes under the kg field name.
+            kin['mass_kg'] = mass * 1000 if source.get('exporter_version') == '0.3.0' else mass
+        elif valid_mass(k.get('mass_tonnes')):
+            kin['mass_kg'] = k['mass_tonnes'] * 1000
+        if valid_mass(k.get('base_mass_kg')):
+            kin['base_mass_kg'] = k['base_mass_kg']
         kin['flight_info'] = pick(k.get('flight_info'), FLIGHT)
         controls = pick(c, CONTROLS) or {}
         controls['flight_assist']=pick(c.get('flight_assist'),('_flaps',))
