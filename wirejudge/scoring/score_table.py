@@ -5,10 +5,11 @@ from PySide6.QtCore import QDate, QItemSelectionModel, Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDateEdit, QHBoxLayout, QHeaderView, QLineEdit,
-    QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget, QToolButton, QButtonGroup,
+    QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget, QToolButton,
 )
 
 from wirejudge.aircraft.aircraft_menu import AircraftMenu
+from wirejudge.display_units import SPEED_FACTORS
 from wirejudge.ui.control_icons import podium_crowns
 from wirejudge.scoring.landing_scoring import COMPONENTS
 from wirejudge.scoring.leaderboard_store import utc_duplicate_ids
@@ -24,6 +25,7 @@ class ScoreTable(QWidget):
         self.duplicate_ids = set()
         self.crowns = podium_crowns()
         self.visible_records = []
+        self.collapsed_pilots = set()
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         filters = QHBoxLayout()
@@ -45,37 +47,45 @@ class ScoreTable(QWidget):
             self.case.addItems(['All cases', 'Case 1', 'Case 3'])
             self.case.currentIndexChanged.connect(self.render)
             filters.addWidget(self.case)
-        self.date_filter = QCheckBox('Date range')
-        self.date_filter.toggled.connect(self.render)
-        filters.addWidget(self.date_filter)
-        self.start = QDateEdit(QDate.currentDate().addMonths(-1))
-        self.end = QDateEdit(QDate.currentDate())
-        for field in (self.start, self.end):
-            field.setCalendarPopup(True)
-            field.setDisplayFormat('yyyy-MM-dd')
-            field.dateChanged.connect(self.render)
-            filters.addWidget(field)
-        layout.addLayout(filters)
         if leaderboard:
-            modes = QHBoxLayout()
-            self.mode_group = QButtonGroup(self)
-            self.mode_group.setExclusive(False)
-            for mode, text in enumerate(('Overall: Show Best', 'Airframe: Show Best', 'Show Last')):
-                toggle = QCheckBox(text)
-                self.mode_group.addButton(toggle, mode)
-                modes.addWidget(toggle)
-            self.mode_group.idClicked.connect(self.toggle_mode)
-            modes.addStretch()
-            layout.addLayout(modes)
+            self.date_filter = QCheckBox('Date range')
+            self.date_filter.toggled.connect(self.render)
+            filters.addWidget(self.date_filter)
+            self.start = QDateEdit(QDate.currentDate().addMonths(-1))
+            self.end = QDateEdit(QDate.currentDate())
+            for field in (self.start, self.end):
+                field.setCalendarPopup(True)
+                field.setDisplayFormat('yyyy-MM-dd')
+                field.dateChanged.connect(self.render)
+                filters.addWidget(field)
+        layout.addLayout(filters)
+        modes = QHBoxLayout()
+        self.best_only = QCheckBox('Best Only')
+        self.group_airframe = QCheckBox('Group by airframe')
+        self.last_only = QCheckBox('Last Only')
+        self.best_only.setToolTip('Show each pilot’s final attempt with the highest percentage score in the filtered results.')
+        self.group_airframe.setToolTip('Keep each airframe’s attempts together and apply Best Only or Last Only per airframe.')
+        self.last_only.setToolTip('Show each pilot’s most recent attempt in the filtered results.')
+        for toggle in (self.best_only, self.group_airframe, self.last_only):
+            modes.addWidget(toggle)
+        self.best_only.toggled.connect(lambda checked: self.toggle_mode(checked, self.last_only))
+        self.last_only.toggled.connect(lambda checked: self.toggle_mode(checked, self.best_only))
+        self.group_airframe.toggled.connect(self.render)
+        modes.addStretch()
+        layout.addLayout(modes)
 
         self.tree = QTreeWidget()
         self.tree.setSelectionMode(QTreeWidget.SelectionMode.ExtendedSelection)
-        headings = ['Username / Airframe', 'Date' if leaderboard else 'Date / time', 'Case', 'Result',
-                    'Plat. Pos.', 'Plat. Spd.', *COMPONENTS[2:],
-                    'Total', 'Status']
+        headings = ['Username', 'Case', 'Wire', 'Airframe', 'Date / time',
+                    'Plat. Pos.', 'Plat. Spd.', *COMPONENTS[2:-1], 'Wire Pts.', 'Total', 'Status', 'Notes']
         self.tree.setHeaderLabels(headings)
-        self.tree.headerItem().setToolTip(4, 'Platform Position')
-        self.tree.headerItem().setToolTip(5, 'Platform Speed')
+        self.total_column = headings.index('Total')
+        self.tree.headerItem().setToolTip(headings.index('Notes'), 'Hover for trap weight and approach crosswind')
+        self.tree.headerItem().setToolTip(5, 'Platform Position')
+        self.tree.headerItem().setToolTip(6, 'Platform Speed')
+        self.tree.headerItem().setToolTip(headings.index('Wire Pts.'), 'Wire score')
+        self.tree.itemExpanded.connect(lambda item: self.collapsed_pilots.discard(item.text(0)))
+        self.tree.itemCollapsed.connect(lambda item: self.collapsed_pilots.add(item.text(0)))
         self.tree.setHorizontalScrollMode(QTreeWidget.ScrollMode.ScrollPerPixel)
         header = self.tree.header()
         header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
@@ -93,6 +103,21 @@ class ScoreTable(QWidget):
     @staticmethod
     def status(record):
         return 'Provisional' if record['provisional'] else record.get('status', 'Final')
+
+    @staticmethod
+    def notes_tooltip(notes):
+        weight = notes.get('mass_kg')
+        weight_text = 'Unavailable' if weight is None else f'{weight:,.0f} kg'
+        average = notes.get('average_crosswind_mps')
+        peak = notes.get('peak_crosswind_mps')
+        factor = SPEED_FACTORS['Knots']
+        average_text = 'Unavailable' if average is None else f'{average * factor:.1f} kt'
+        peak_text = 'Unavailable'
+        if peak is not None:
+            side = ' from right' if peak > 0 else ' from left' if peak < 0 else ''
+            peak_text = f'{abs(peak) * factor:.1f} kt{side}'
+        return (f'Trap weight: {weight_text}\nAverage crosswind: {average_text}'
+                f'\nPeak crosswind: {peak_text}')
 
     def build_filter_menu(self):
         for action in self.filter_menu.actions():
@@ -137,29 +162,27 @@ class ScoreTable(QWidget):
                     option.setChecked(False)
         self.render()
 
-    def toggle_mode(self, mode):
-        if self.mode_group.button(mode).isChecked():
-            for button in self.mode_group.buttons():
-                if button is not self.mode_group.button(mode):
-                    button.setChecked(False)
+    def toggle_mode(self, checked, other):
+        if checked and other.isChecked():
+            other.blockSignals(True)
+            other.setChecked(False)
+            other.blockSignals(False)
         self.render()
 
     def reduce_rows(self, rows):
-        if not self.leaderboard:
+        last = self.last_only.isChecked()
+        if not last and not self.best_only.isChecked():
             return rows
-        mode = next((self.mode_group.id(button) for button in self.mode_group.buttons()
-                     if button.isChecked()), None)
-        if mode is None:
-            return rows
+        by_airframe = self.group_airframe.isChecked()
         best = {}
         for row in rows:
             keys, _, _, pilot, airframe, record = row
-            started = keys[1] if keys[1] is not None else float('-inf')
-            group = (pilot, airframe) if mode == 1 else (pilot,)
-            if mode == 2:
+            started = keys[4] if keys[4] is not None else float('-inf')
+            group = (pilot, airframe) if by_airframe else (pilot,)
+            if last:
                 rank = (started, record['attempt_id'])
             else:
-                if record['provisional'] or not record['maximum']:
+                if self.status(record) != 'Final' or not record['maximum']:
                     continue
                 rank = (record['score']/record['maximum'], started, record['attempt_id'])
             if group not in best or rank > best[group][0]:
@@ -192,27 +215,18 @@ class ScoreTable(QWidget):
             count = sum(map(len, self.facets.values()))
             self.filter_button.setText(f'Filters ({count})' if count else 'Filters')
         role = Qt.ItemDataRole.UserRole
-        group_role = role + 1
         tree = self.tree
         selected = {item.data(0, role) for item in tree.selectedItems()}
         current = tree.currentItem()
         current_id = current.data(0, role) if current else None
-        collapsed = set()
-        for index in range(tree.topLevelItemCount()):
-            player = tree.topLevelItem(index)
-            if not player.isExpanded():
-                collapsed.add(tuple(player.data(0, group_role)))
-            for child in range(player.childCount()):
-                airframe = player.child(child)
-                if not airframe.isExpanded():
-                    collapsed.add(tuple(airframe.data(0, group_role)))
         scroll = tree.verticalScrollBar().value()
         text = self.search.text().strip().casefold()
         case = 'All cases' if self.leaderboard else self.case.currentText()
-        dated = self.date_filter.isChecked()
-        start, end = self.start.date().toPython(), self.end.date().toPython()
+        dated = self.leaderboard and self.date_filter.isChecked()
+        if dated:
+            start, end = self.start.date().toPython(), self.end.date().toPython()
         rows = []
-        date_format = '%Y-%m-%d' if self.leaderboard else '%Y-%m-%d %H:%M:%S'
+        date_format = '%Y-%m-%d %H:%M:%S'
         for record in self.records:
             pilot = record.get('pilot') or 'Unknown username'
             airframe = record.get('aircraft') or 'Unknown airframe'
@@ -233,9 +247,15 @@ class ScoreTable(QWidget):
                 continue
             date = started.strftime(date_format) if started else '—'
             total, maximum = record['score'], record['maximum']
-            labels = [record.get('attempt_label', outcome), date, record['case'], outcome]
-            keys = [pilot.casefold(), started.timestamp() if started else None,
-                    record['case'], outcome.casefold()]
+            wire = record.get('wire')
+            if wire is None and outcome in ('Wire 1', 'Wire 2', 'Wire 3', 'Wire 4'):
+                wire = int(outcome[-1])
+            display_status = status
+            if outcome not in ('—', 'Active', 'Final') and not outcome.startswith('Wire '):
+                display_status = outcome if status == 'Final' else f'{status} · {outcome}'
+            labels = ['', record['case'], str(wire) if wire is not None else '—', airframe, date]
+            keys = [pilot.casefold(), record['case'], wire, airframe.casefold(),
+                    started.timestamp() if started else None]
             tips = {}
             for component in COMPONENTS:
                 value = record['components'].get(component)
@@ -248,8 +268,10 @@ class ScoreTable(QWidget):
                     if component in ('Glide', 'Localizer') and record.get('final_reference'):
                         tip += f"\nFinal reference: {record['final_reference']}"
                     tips[len(labels)-1] = tip
-            labels.extend([f'{total:,.1f} / {maximum:,.0f}', status])
-            keys.extend([total, status])
+            notes = record.get('notes') or {}
+            labels.extend([f'{total:,.1f} / {maximum:,.0f}', display_status, 'Details' if notes else '—'])
+            keys.extend([total, display_status.casefold(), bool(notes)])
+            tips[len(labels) - 1] = self.notes_tooltip(notes)
             rows.append((keys, labels, tips, pilot, airframe, record))
 
         _, best_by_case = self.rankings(self.records)
@@ -264,27 +286,31 @@ class ScoreTable(QWidget):
         known = [row for row in rows if row[0][column] is not None]
         known.sort(key=lambda row: row[0][column], reverse=descending)
         ordered = known + [row for row in rows if row[0][column] is None]
+        by_pilot = {}
+        for row in ordered:
+            by_pilot.setdefault(row[3], []).append(row)
+        if self.group_airframe.isChecked() and column != 3:
+            for attempts in by_pilot.values():
+                attempts.sort(key=lambda row: row[4].casefold())
+        ordered = [row for attempts in by_pilot.values() for row in attempts]
         self.visible_records = [row[-1] for row in ordered]
         tree.setUpdatesEnabled(False)
         try:
             tree.clear()
             groups = {}
-            for _, labels, tips, pilot, airframe, record in ordered:
-                for key, label in (((pilot,), pilot), ((pilot, airframe), airframe)):
-                    if key not in groups:
-                        group = QTreeWidgetItem(groups[key[:-1]] if len(key) == 2 else tree, [label])
-                        group.setFlags(group.flags() & ~Qt.ItemFlag.ItemIsSelectable)
-                        group.setData(0, group_role, list(key))
-                        group.setExpanded(key not in collapsed)
-                        if len(key) == 1 and pilot in crowns:
-                            group.setIcon(0, crowns[pilot])
-                        groups[key] = group
-                item = QTreeWidgetItem(groups[pilot, airframe], labels)
+            for _, labels, tips, pilot, _, record in ordered:
+                if pilot not in groups:
+                    group = QTreeWidgetItem(tree, [pilot])
+                    group.setFlags(group.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+                    if pilot in crowns:
+                        group.setIcon(0, crowns[pilot])
+                    groups[pilot] = group
+                item = QTreeWidgetItem(groups[pilot], labels)
                 if record['provisional']:
                     for index in range(len(labels)):
                         item.setForeground(index, yellow)
                 elif record['maximum'] and record['score'] == best_by_case.get((pilot, record['case'])):
-                    item.setForeground(len(labels) - 2, green)
+                    item.setForeground(self.total_column, green)
                 identifier = record['attempt_id']
                 item.setData(0, role, identifier)
                 tooltip = f"Attempt ID: {identifier}\n{record.get('replay_name', '')}"
@@ -296,6 +322,8 @@ class ScoreTable(QWidget):
                 if identifier == current_id:
                     tree.setCurrentItem(item, 0, QItemSelectionModel.SelectionFlag.NoUpdate)
                 item.setSelected(identifier in selected)
+            for pilot, group in groups.items():
+                group.setExpanded(pilot not in self.collapsed_pilots)
             tree.verticalScrollBar().setValue(scroll)
         finally:
             tree.setUpdatesEnabled(True)

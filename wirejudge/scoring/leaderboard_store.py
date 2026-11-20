@@ -18,7 +18,7 @@ FORMAT='WireJudgeLive.Leaderboards'
 DUPLICATE_WINDOW = timedelta(seconds=5)
 FIELDS={'attempt_id','recording_id','replay_name','pilot','pilot_id','aircraft','carrier','case',
         'started_utc','ended_utc','updated_utc','outcome','wire','score','maximum','components',
-        'provisional','rules','final_reference','attempt_start_offset_s','attempt_end_offset_s'}
+        'provisional','rules','final_reference','attempt_start_offset_s','attempt_end_offset_s','notes'}
 
 
 def now_utc():return datetime.now(timezone.utc).isoformat().replace('+00:00','Z')
@@ -79,6 +79,17 @@ def normalize_record(record):
     if 'speed_deadzone_nm' not in rules.get('targets', {}):
         normalized['targets']['speed_deadzone_nm'] = 0.
     r['rules']={section:{key:normalized[section][key] for key in keys} for section,keys in DEFAULT_RULES.items()}
+    notes = r.pop('notes', None)
+    if notes is not None:
+        if not isinstance(notes, dict):
+            raise ValueError('Invalid attempt notes.')
+        notes = {key: value for key, value in notes.items() if key in
+                 ('mass_kg', 'base_mass_kg', 'average_crosswind_mps', 'peak_crosswind_mps')}
+        for key, value in notes.items():
+            if not number(value) or (key != 'peak_crosswind_mps' and value < 0):
+                raise ValueError(f'Invalid {key} in attempt notes.')
+        if notes:
+            r['notes'] = notes
     r['provisional']=bool(r.get('provisional'))
     if r.get('final_reference') is None:
         r.pop('final_reference', None)
@@ -112,7 +123,7 @@ def score_record(attempt,grade,rules,info=None):
         case=attempt.get('case','Case 1'),started_utc=utc(start),ended_utc=utc(end_unix),updated_utc=now_utc(),
         outcome=attempt['outcome'],wire=attempt.get('wire'),score=grade['earned'],maximum=grade['maximum'],
         components={key:{'score':value['earned'],'maximum':value['maximum']} for key,value in grade['components'].items()},
-        provisional=grade['provisional'] or end is None,rules=rules,final_reference=grade.get('final_reference'),
+        notes=grade.get('notes'), provisional=grade['provisional'] or end is None,rules=rules,final_reference=grade.get('final_reference'),
         attempt_start_offset_s=max(0,attempt['start_s']-info['start_s']) if info.get('start_s') is not None else None,
         attempt_end_offset_s=max(0,end-info['start_s']) if end is not None and info.get('start_s') is not None else None))
 

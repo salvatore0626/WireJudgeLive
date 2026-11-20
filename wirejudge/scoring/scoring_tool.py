@@ -28,7 +28,7 @@ CAW_RECORD = 'New CAW 8 Record!'
 
 
 def landing_records(attempt, grade, records):
-    """Use the same score fraction as the leaderboard's Overall Best filter."""
+    """Use the same score fraction as the score table's Best Only filter."""
     if grade['provisional'] or grade['maximum'] <= 0 or not attempt.get('wire'):
         return ()
     fraction = grade['earned'] / grade['maximum']
@@ -317,10 +317,6 @@ class ScoringTool(QObject):
         layout.addWidget(self.scoreboard, 1)
         self.board_tree.itemDoubleClicked.connect(self.open_attempt_editor)
         row = QHBoxLayout()
-        edit = QPushButton('Edit Attempt')
-        edit.clicked.connect(lambda: self.open_attempt_editor())
-        row.addWidget(edit)
-        b=QPushButton('Review approach graphs');b.clicked.connect(self.review_selected);row.addWidget(b)
         for title,slot in [('Save attempts to Leaderboards',lambda:self.owner.leaderboards.save_scoreboard()),('Export scoreboard',lambda:self.owner.leaderboards.export_scoreboard())]:
             b=QPushButton(title);b.clicked.connect(slot);row.addWidget(b)
         row.addStretch();layout.addLayout(row)
@@ -349,11 +345,6 @@ class ScoringTool(QObject):
     def visible_board_ids(self):
         return {record['attempt_id'] for record in self.scoreboard.visible_records}
 
-    def review_selected(self):
-        item=self.board_tree.currentItem();identifier=item.data(0,Qt.ItemDataRole.UserRole) if item else None
-        if identifier is None:return
-        self.owner.tabs.setCurrentIndex(1);view=self.owner.approach_view;view.refresh(force=True)
-        if identifier in view.items:view.tree.setCurrentItem(view.items[identifier])
     def set_mode(self,mode):
         self.mode=mode;self.owner.settings.store.setValue('scoring/mode',mode)
         self.render()
@@ -442,7 +433,7 @@ class ScoringTool(QObject):
                     attempt_id=identifier, pilot=attempt['pilot'], aircraft=attempt.get('airframe'),
                     carrier=attempt.get('carrier'), started_utc=utc(start),
                     case=attempt.get('case', 'Case 1'), outcome=attempt['outcome'],
-                    attempt_label=f"{attempt['outcome']} · {attempt.get('case', 'Case 1')}",
+                    wire=attempt.get('wire'), notes=grade.get('notes'),
                     score=points, maximum=grade['maximum'], components=components,
                     status='Active' if active else 'Final', provisional=grade['provisional'],
                     final_reference=grade.get('final_reference'),

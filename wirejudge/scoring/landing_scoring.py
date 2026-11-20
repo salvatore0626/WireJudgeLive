@@ -78,6 +78,12 @@ def compact_sample(sample, aircraft, ship, glide=3.5, offset=10., volume=None):
     hook = (aircraft.get('systems') or {}).get('hook_point_world_m')
     hook_position = landing_course_position(hook, volume) if (
         isinstance(hook, list) and len(hook) == 3 and all(number(v) for v in hook)) else None
+    wind = f.get('wind')
+    crosswind = None
+    if isinstance(wind, (list, tuple)) and len(wind) == 3 and number(wind[0]) and number(wind[2]):
+        heading = math.radians(volume['runway_heading_deg'])
+        # Wind is a world vector pointing downwind. Positive means from the right.
+        crosswind = wind[2] * math.sin(heading) - wind[0] * math.cos(heading)
     # GS is stored as an absolute angle so changing target geometry can regrade.
     return [sample['capture']['monotonic_s'],clock,m['aft']/NM,
             math.sqrt(m['aft']**2+m['left']**2+m['height']**2)/NM,
@@ -85,7 +91,7 @@ def compact_sample(sample, aircraft, ship, glide=3.5, offset=10., volume=None):
             f.get('altitudeASL') if number(f.get('altitudeASL')) else None,
             groundspeed,
             f.get('indicatedAirspeed') if number(f.get('indicatedAirspeed')) else None,
-            [coordinate / NM for coordinate in hook_position] if hook_position is not None else None]
+            [coordinate / NM for coordinate in hook_position] if hook_position is not None else None, crosswind]
 
 
 def fill_aoa(samples):
@@ -114,6 +120,23 @@ def final_position(sample):
             aft * math.tan(math.radians(sample[5])) if number(sample[5]) else math.nan,
             aft * math.tan(math.radians(sample[4])) if number(sample[4]) else math.nan,
             False)
+
+
+def attempt_notes(attempt, samples, last):
+    catch = attempt.get('wire_catch_s')
+    caught = attempt.get('wire') and number(catch) and attempt['start_s'] <= catch <= last
+    limit = catch if caught else last
+    crosswinds = [p[11] for p in samples if p[0] <= limit and len(p) > 11 and number(p[11])]
+    notes = {}
+    if crosswinds:
+        notes['average_crosswind_mps'] = sum(map(abs, crosswinds)) / len(crosswinds)
+        notes['peak_crosswind_mps'] = max(crosswinds, key=abs)
+    if caught:
+        for field in ('mass_kg', 'base_mass_kg'):
+            mass = attempt.get(field)
+            if number(mass) and mass > 0:
+                notes[field] = mass
+    return notes
 
 
 def score_attempt(attempt, samples, rules=None):
@@ -214,7 +237,7 @@ def score_attempt(attempt, samples, rules=None):
     provisional=missing or bool(attempt.get('missing_bounds')) or (final and not resolved)
     reference = {frozenset({True}): 'Hook', frozenset({False}): 'Aircraft fallback',
                  frozenset({True, False}): 'Hook + aircraft fallback'}.get(frozenset(final_sources))
-    return {'final_reference':reference,'components':results,'earned':total_earned,'deductive':maximum-total_lost,
+    return {'notes':attempt_notes(attempt, samples, last), 'final_reference':reference,'components':results,'earned':total_earned,'deductive':maximum-total_lost,
             'maximum':maximum,'progress':total_progress/maximum if maximum else 1.,
             'provisional':provisional,'missing':missing,'complete':final,'wire_pending':not resolved,
             'phase':('Complete' if resolved else outcome) if final else ('Wire resolved' if resolved else
